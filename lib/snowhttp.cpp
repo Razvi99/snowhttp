@@ -12,7 +12,7 @@
 #include "snowhttp.h"
 
 int snow_wssl_recv(WOLFSSL *ssl, char *buff, int sz, void *ctx) {
-    std::cout<<"recv\n";
+    std::cout << "recv\n";
     /* By default, ctx will be a pointer to the file descriptor to read from.
      * This can be changed by calling wolfSSL_SetIOReadCtx(). */
     int sockfd = *(int *) ctx;
@@ -61,7 +61,7 @@ int snow_wssl_recv(WOLFSSL *ssl, char *buff, int sz, void *ctx) {
 }
 
 int snow_wssl_send(WOLFSSL *ssl, char *buff, int sz, void *ctx) {
-    std::cout<<"send\n";
+    std::cout << "send\n";
     /* By default, ctx will be a pointer to the file descriptor to write to.
      * This can be changed by calling wolfSSL_SetIOWriteCtx(). */
     int sockfd = *(int *) ctx;
@@ -168,22 +168,55 @@ void snow_initConnectionTLS(snow_global_t *global, snow_connection_t *conn) {
 
     wolfSSL_set_fd(conn->ssl, conn->sockfd);
     wolfSSL_set_using_nonblock(conn->ssl, 1);
+
+    char buffer[80];
+    int ret = wolfSSL_connect(conn->ssl);
+    int err;
+    if (ret != SSL_SUCCESS) {
+        err = wolfSSL_get_error(conn->ssl, ret);
+        printf("error = %d, %s\n", err, wolfSSL_ERR_error_string(err, buffer));
+    }
 }
 
 static void snow_io_read_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
-    //std::cout << "muie read\n";
+    auto *p = (struct ev_io_snow *) w;
+    auto *conn = (struct snow_connection_t *) p->data;
+
+    bool eof = false;
+
+    std::cerr<<"put from sock\n";
+
+    buff_put_from_fd(&conn->readBuff, conn->sockfd, -1, &eof, nullptr, nullptr);
+
+
+    std::cout<<conn->readBuff.buff;
+
+    eof =  (strcmp(&conn->readBuff.buff[conn->readBuff.head - 2], "\n\n") == 0);
+
+    if(eof){
+        std::cerr<<"read all data\n";
+    }
+
+    exit(0);
+    assert(0);
+
 }
 
 static void snow_io_write_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
-    auto *p = (struct ev_io_snow *)w;
-    auto *conn = (struct snow_connection_t *)p->data;
 
-    if(conn->connectionStatus == CONN_IN_PROGRESS){
+    auto *p = (struct ev_io_snow *) w;
+    auto *conn = (struct snow_connection_t *) p->data;
+
+    if (conn->connectionStatus == CONN_IN_PROGRESS) {
         int conn_r = connect(conn->sockfd, (struct sockaddr *) &conn->address, sizeof(conn->address));
-        if(conn_r == 0){
+        if (conn_r == 0) {
             conn->connectionStatus = CONN_ACK;
-            std::cerr<<"Connection ack\n";
-        } else std::cerr<<"waiting for ack\n";
+            std::cerr << "Connection ack\n";
+        } else std::cerr << "waiting for ack\n";
+    }
+    if (conn->connectionStatus == CONN_ACK && !buff_empty(&conn->writeBuff)) {
+        buff_pull_to_fd(&conn->writeBuff, conn->sockfd, buff_to_pull(&conn->writeBuff), nullptr, nullptr);
+        std::cerr<<"pulled to sock\n";
     }
 
 }
@@ -193,14 +226,16 @@ static void snow_timer_cb(struct ev_loop *loop, struct ev_timer *w, int revents)
 }
 
 void snow_initConnection(snow_global_t *global, snow_connection_t *conn) {
-    conn->sockfd = socket(conn->address.sin_family, SOCK_STREAM | SOCK_NONBLOCK , 0);
+    conn->sockfd = socket(conn->address.sin_family, SOCK_STREAM, 0);
     conn->connectionStatus = CONN_NO;
 
     int flag = 1; // disable nagle
     setsockopt(conn->sockfd, IPPROTO_TCP, TCP_NODELAY, (char *) &flag, sizeof(int));
 
-    ev_io_init((struct ev_io *)&conn->ior, snow_io_read_cb, conn->sockfd, EV_READ);
-    ev_io_init((struct ev_io *)&conn->iow, snow_io_write_cb, conn->sockfd, EV_WRITE);
+    fcntl(conn->sockfd, F_SETFL, fcntl(conn->sockfd, F_GETFL, 0) | O_NONBLOCK); // set socket to non blocking
+
+    ev_io_init((struct ev_io *) &conn->ior, snow_io_read_cb, conn->sockfd, EV_READ);
+    ev_io_init((struct ev_io *) &conn->iow, snow_io_write_cb, conn->sockfd, EV_WRITE);
     conn->ior.data = conn;
     conn->iow.data = conn;
 
@@ -222,29 +257,38 @@ void snow_initConnection(snow_global_t *global, snow_connection_t *conn) {
         assert(0);
     }
 
-    ev_io_start(global->loop, (struct ev_io *)&conn->ior);
-    ev_io_start(global->loop, (struct ev_io *)&conn->iow);
+    ev_io_start(global->loop, (struct ev_io *) &conn->ior);
+    ev_io_start(global->loop, (struct ev_io *) &conn->iow);
 
     ev_timer_init(&global->timer, snow_timer_cb, 0.0, 1.0);
     //ev_timer_start(global->loop, &global->timer);
 
-    snow_initConnectionTLS(global, conn);
+    //snow_initConnectionTLS(global, conn);
 }
 
 void snow_sendRequest(snow_global_t *global, snow_connection_t *conn) {
 
     int size = sprintf(conn->requestBuff, "%s /%s HTTP/1.1\r\nHost: %s\r\n\r\n", method_strings[conn->method], conn->path, conn->hostname);
 
-    if (wolfSSL_write(conn->ssl, conn->requestBuff, size) != size) {
-        std::cerr << "wolfSSL_write failed\n";
-        assert(0);
-    }
+    /* if (wolfSSL_write(conn->ssl, conn->requestBuff, size) != size) {
+         std::cerr << "wolfSSL_write failed\n";
+         char buffer[80];
+         int err = wolfSSL_get_error(conn->ssl, 0);
+         wolfSSL_ERR_error_string(err, buffer);
+         printf("%s\n", buffer);
+         assert(0);
+     }*/
+    buff_put(&conn->writeBuff, conn->requestBuff, size);
     //write(conn->sockfd, conn->requestBuff, size);
-
+    return;
     char buff[100000] = {};
 
     if (wolfSSL_read(conn->ssl, buff, sizeof(buff)) <= 0) {
         std::cerr << "wolfSSL_write failed\n";
+        char buffer[80];
+        int err = wolfSSL_get_error(conn->ssl, 0);
+        wolfSSL_ERR_error_string(err, buffer);
+        printf("%s\n", buffer);
         assert(0);
     }
     wolfSSL_free(conn->ssl);
@@ -283,9 +327,6 @@ void snow_init(snow_global_t *global) {
         fprintf(stderr, "Error loading /etc/ssl/certs/ca-certificates.crt");
         assert(0);
     }
-
-    wolfSSL_SetIORecv(global->wolfCtx, snow_wssl_recv);
-    wolfSSL_SetIOSend(global->wolfCtx, snow_wssl_send);
 }
 
 void snow_destroy(snow_global_t *global) {

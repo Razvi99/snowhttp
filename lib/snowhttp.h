@@ -5,9 +5,9 @@
 #include <netdb.h>
 #include <wolfssl/ssl.h>
 #include "events.h"
+#include "staticbuffers.h"
 
 const int concurrentConnections = 1000;
-const int connectionBufferSize = 1024;
 const int connectionUrlSize = 256;
 const int connectionRequestBuffSize = 1024;
 
@@ -49,11 +49,10 @@ struct snow_connection_t {
 
     struct ev_io_snow ior, iow;
 
-    uint8_t writeBuff[1000];
-    int writeBuff_tail = 0, writeBuff_head = 0;
+    buff_static_t writeBuff;
+    buff_static_t readBuff;
 
-    int buffEnd = 0;
-    uint8_t buff[connectionBufferSize] = {};
+    bool gotAllResponse;
 };
 
 struct snow_global_t {
