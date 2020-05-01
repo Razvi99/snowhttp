@@ -18,7 +18,7 @@ snow_global_t global;
 
 static void loop_cb(struct ev_loop *loop) {
     if(i == 1){
-        char url[256] = "http://localhost/";
+        char url[256] = "https://api.binance.com/api/v3/exchangeInfo";
         snow_do(&global, GET, url);
     }
     i++;

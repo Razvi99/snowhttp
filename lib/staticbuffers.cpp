@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <climits>
 #include <iostream>
+#include <wolfssl/ssl.h>
 
 bool buff_put(struct buff_static_t *buff, char *data, size_t dataSize) {
     if (buff->head + dataSize > BUFFSIZE)
@@ -33,26 +34,35 @@ bool buff_empty(struct buff_static_t *buff) {
     return buff->head == buff->tail;
 }
 
-size_t buff_pull_to_fd(struct buff_static_t *buff, const int &fd, size_t size, int (*wr)(int fd, void *buf, size_t count, void *arg), void *arg) {
-
+size_t buff_pull_to_sock(struct buff_static_t *buff, void *f, size_t size, bool ssl) {
     size_t remain;
 
-    if (buff->tail + size > BUFFSIZE)
+    if (buff->tail + size > BUFFSIZE) {
+        std::cerr<<"ERR: send buffer too small\n";
         assert(0);
+    }
 
     remain = size;
 
     while (remain > 0) {
         ssize_t ret;
 
-        if (wr) {
-            ret = wr(fd, &buff->buff[buff->tail], remain, arg);
-            if (ret == -1) // error
-                return -1;
-            else if (ret == EWOULDBLOCK) // pending
-                break;
+        if (ssl) {
+            ret = wolfSSL_write((WOLFSSL *) f, &buff->buff[buff->tail], remain);
+
+            if (ret == -1) {
+                int err = wolfSSL_get_error((WOLFSSL *) f, ret);
+
+                if (err == WOLFSSL_ERROR_WANT_WRITE)
+                    break;
+                else {
+                    char buffer[256];
+                    fprintf(stderr, "sock put error = %d, %s\n", err, wolfSSL_ERR_error_string(err, buffer));
+                    assert(0);
+                }
+            }
         } else {
-            ret = write(fd, &buff->buff[buff->tail], remain);
+            ret = write(*(int *) f, &buff->buff[buff->tail], remain);
             if (ret < 0) {
                 if (errno == EINTR)
                     continue;
@@ -68,10 +78,10 @@ size_t buff_pull_to_fd(struct buff_static_t *buff, const int &fd, size_t size, i
         buff->tail += ret;
     }
 
-    return size - remain;
+    return remain;
 }
 
-size_t buff_put_from_fd(struct buff_static_t *buff, const int &fd, int size, bool *eof, int (*rd)(int fd, void *buf, size_t count, void *arg), void *arg) {
+size_t buff_put_from_sock(struct buff_static_t *buff, void *f, int size, bool *eof, bool ssl) {
 
     size_t remain;
 
@@ -86,19 +96,27 @@ size_t buff_put_from_fd(struct buff_static_t *buff, const int &fd, int size, boo
         size_t head_room = BUFFSIZE - buff->head;
 
         // TODO: add unlikely?
-        if (!head_room) {
-            std::cerr << "no head space put fd\n";
+        if (head_room <= 0) {
+            std::cerr << "ERR: receive buffer too small\n";
             assert(0);
         }
 
-        if (rd) {
-            ret = rd(fd, &buff->buff[buff->head], head_room, arg);
-            if (ret == -1) // error
-                return -1;
-            else if (ret == EWOULDBLOCK) // pending
-                break;
+        if (ssl) {
+            ret = wolfSSL_read((WOLFSSL *) f, &buff->buff[buff->head], head_room);
+
+            if (ret == -1) {
+                int err = wolfSSL_get_error((WOLFSSL *) f, ret);
+
+                if (err == WOLFSSL_ERROR_WANT_READ)
+                    break;
+                else {
+                    char buffer[256];
+                    fprintf(stderr, "sock put error = %d, %s\n", err, wolfSSL_ERR_error_string(err, buffer));
+                    assert(0);
+                }
+            }
         } else {
-            ret = read(fd, &buff->buff[buff->head], head_room);
+            ret = read(*(int *) f, &buff->buff[buff->head], head_room);
             if (ret < 0) {
                 if (errno == EINTR)
                     continue;
@@ -122,5 +140,5 @@ size_t buff_put_from_fd(struct buff_static_t *buff, const int &fd, int size, boo
         remain -= ret;
 
     }
-    return size - remain;
+    return remain;
 }

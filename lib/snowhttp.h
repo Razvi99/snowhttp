@@ -17,11 +17,14 @@ enum method_enum {
 const char method_strings[3][10] = {"GET", "POST", "DELETE"};
 
 enum conn_status_enum {
-    CONN_NO, // before connect()
+    CONN_UNREADY, // before connect()
     CONN_IN_PROGRESS, // connect() waiting for ACK
     CONN_ACK, // connect() received ACK
-    CONN_TLS_PROGRESS, // wolfssl tls started
-    CONN_TLS_FINISH // wolfssl tls finished
+    CONN_TLS_HANDSHAKE, // wolfssl tls started
+    CONN_READY, // ready to send http request
+    CONN_WAITING,
+    CONN_RECEIVING,
+    CONN_DONE // received http response
 };
 
 struct ev_io_snow {
@@ -29,12 +32,15 @@ struct ev_io_snow {
     void *data;
 };
 
+struct snow_global_t;
+
 struct snow_connection_t {
     // protocol://hostname:port/path-and-file-name
     char requestUrl[connectionUrlSize] = {};
     char *protocol, *hostname, *path;
     int port = 0;
     int method = 0;
+    bool secure = false;
 
     char requestBuff[connectionRequestBuffSize];
 
@@ -52,7 +58,9 @@ struct snow_connection_t {
     buff_static_t writeBuff;
     buff_static_t readBuff;
 
-    bool gotAllResponse;
+    bool chunked = false;
+
+    snow_global_t *global;
 };
 
 struct snow_global_t {
