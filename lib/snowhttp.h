@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <netinet/in.h>
 #include <netdb.h>
+#include <wolfssl/ssl.h>
+#include "events.h"
 
 const int concurrentConnections = 1000;
 const int connectionBufferSize = 1024;
@@ -13,6 +15,19 @@ enum method_enum {
     GET, POST, DELTE
 };
 const char method_strings[3][10] = {"GET", "POST", "DELETE"};
+
+enum conn_status_enum {
+    CONN_NO, // before connect()
+    CONN_IN_PROGRESS, // connect() waiting for ACK
+    CONN_ACK, // connect() received ACK
+    CONN_TLS_PROGRESS, // wolfssl tls started
+    CONN_TLS_FINISH // wolfssl tls finished
+};
+
+struct ev_io_snow {
+    struct ev_io io;
+    void *data;
+};
 
 struct snow_connection_t {
     // protocol://hostname:port/path-and-file-name
@@ -28,20 +43,31 @@ struct snow_connection_t {
 
     int sockfd, connfd;
     struct sockaddr_in address;
+    int connectionStatus = 0;
+
+    WOLFSSL *ssl;
+
+    struct ev_io_snow ior, iow;
+
+    uint8_t writeBuff[1000];
+    int writeBuff_tail = 0, writeBuff_head = 0;
 
     int buffEnd = 0;
     uint8_t buff[connectionBufferSize] = {};
 };
 
 struct snow_global_t {
+    ev_loop *loop;
+    WOLFSSL_CTX *wolfCtx;
+
+    struct ev_timer timer;
+
     int newConnId = 0;
     snow_connection_t connections[concurrentConnections];
 };
 
-void snow_parseUrl(snow_connection_t *conn);
+void snow_init(snow_global_t *global);
 
-void snow_resolveHost(snow_connection_t *conn);
+void snow_destroy(snow_global_t *global);
 
-void snow_initConnection(snow_connection_t *conn);
-
-void snow_sendRequest(snow_connection_t *conn);
+void snow_do(snow_global_t *global, int method, const char *url);
