@@ -7,7 +7,7 @@
 #include "events.h"
 #include "staticbuffers.h"
 
-const int concurrentConnections = 1000;
+const int concurrentConnections = 10;
 const int connectionUrlSize = 256;
 const int connectionRequestBuffSize = 1024;
 
@@ -45,7 +45,7 @@ struct snow_connection_t {
     char requestBuff[connectionRequestBuffSize];
 
     struct hostent hostent;
-    char hostentBuff[2048];
+    char hostentBuff[2048] = {};
 
     int sockfd, connfd;
     struct sockaddr_in address;
@@ -58,14 +58,20 @@ struct snow_connection_t {
     buff_static_t writeBuff;
     buff_static_t readBuff;
 
+    char *content;
+    size_t contentLen = 0;
     bool chunked = false;
+    bool chunkEnd = false;
+
+    void *extra_cb;
+    void (*write_cb)(char *data, void *extra);
 
     snow_global_t *global;
 };
 
 struct snow_global_t {
     ev_loop *loop;
-    WOLFSSL_CTX *wolfCtx;
+    WOLFSSL_CTX *wolfCtx = nullptr;
 
     struct ev_timer timer;
 
@@ -77,4 +83,4 @@ void snow_init(snow_global_t *global);
 
 void snow_destroy(snow_global_t *global);
 
-void snow_do(snow_global_t *global, int method, const char *url);
+void snow_do(snow_global_t *global, int method, const char *url, void (*write_cb)(char *data, void *extra), void *extra);

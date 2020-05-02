@@ -2,19 +2,19 @@
 
 #include <cstdint>
 
-#define BUFFSIZE (1<<20) // 16k
+#define BUFFSIZE (1<<22U)
 
 struct buff_static_t {
     char buff[BUFFSIZE] = {};
-    int tail = 0;
-    int head = 0;
+    size_t tail = 0;
+    size_t head = 0;
 };
 
 int buff_to_pull(struct buff_static_t *buff);
 
 bool buff_empty(struct buff_static_t *buff);
 
-size_t buff_put_from_sock(struct buff_static_t *buff, void *f, int size, bool *eof, bool ssl);
+size_t buff_put_from_sock(struct buff_static_t *buff, void *f, int size, bool ssl);
 
 bool buff_put(struct buff_static_t *buff, void *dest, size_t size);
 

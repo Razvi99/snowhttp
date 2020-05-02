@@ -38,7 +38,7 @@ size_t buff_pull_to_sock(struct buff_static_t *buff, void *f, size_t size, bool 
     size_t remain;
 
     if (buff->tail + size > BUFFSIZE) {
-        std::cerr<<"ERR: send buffer too small\n";
+        std::cerr << "ERR: send buffer too small\n";
         assert(0);
     }
 
@@ -81,15 +81,14 @@ size_t buff_pull_to_sock(struct buff_static_t *buff, void *f, size_t size, bool 
     return remain;
 }
 
-size_t buff_put_from_sock(struct buff_static_t *buff, void *f, int size, bool *eof, bool ssl) {
+size_t buff_put_from_sock(struct buff_static_t *buff, void *f, int size, bool ssl) {
 
-    size_t remain;
+    size_t remain, total = 0;
 
     if (size < 0)
         size = INT_MAX;
 
     remain = size;
-    *eof = false;
 
     while (remain) {
         ssize_t ret;
@@ -130,7 +129,7 @@ size_t buff_put_from_sock(struct buff_static_t *buff, void *f, int size, bool *e
         }
 
         if (!ret) {
-            *eof = true;
+            assert(0); // conn closed?
             break;
         }
 
@@ -138,7 +137,8 @@ size_t buff_put_from_sock(struct buff_static_t *buff, void *f, int size, bool *e
 
         buff->head += ret;
         remain -= ret;
+        total += ret;
 
     }
-    return remain;
+    return total;
 }

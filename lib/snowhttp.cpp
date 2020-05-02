@@ -82,47 +82,49 @@ void snow_startTLSHandshake(snow_global_t *global, snow_connection_t *conn) {
 }
 
 static void snow_io_read_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
-    auto *p = (struct ev_io_snow *) w;
-    auto *conn = (struct snow_connection_t *) p->data;
-
+    auto *conn = (struct snow_connection_t *) ((struct ev_io_snow *) w)->data;
 
     if (conn->connectionStatus == CONN_WAITING || conn->connectionStatus == CONN_RECEIVING) {
-        bool eof = false;
+        size_t readSize = buff_put_from_sock(&conn->readBuff, conn->secure ? (void *) conn->ssl : (void *) &conn->sockfd, -1, conn->secure);
 
-        std::cerr << "put from sock\n";
+        if (!readSize) return; // no read
 
-        buff_put_from_sock(&conn->readBuff, conn->secure ? (void *) conn->ssl : (void *) &conn->sockfd, -1, &eof, conn->secure);
-
-        if(!conn->readBuff.head) return; // no read
-
-        if(conn->connectionStatus == CONN_WAITING) {
+        if (conn->connectionStatus == CONN_WAITING) {
             conn->connectionStatus = CONN_RECEIVING;
 
             char *chunked = strstr(&conn->readBuff.buff[conn->readBuff.tail], "Transfer-Encoding: chunked\r\n");
 
-            if(chunked)
-                conn->chunked = true; // TODO: process chunked
+            if (chunked) conn->chunked = true;
 
             char *p = strstr(&conn->readBuff.buff[conn->readBuff.tail], "\r\n\r\n");
 
-            conn->readBuff.tail = conn->readBuff.buff - p;
-
-
-
-            if(p == nullptr){
-                std::cerr<<"ERR: could not find the end of headers\n";
+            if (p == nullptr) {
+                std::cerr << "ERR: could not find the end of headers\n";
                 assert(0);
-            } else std::cerr<<conn->readBuff.buff;
-        } else{
+            }
+
+            p += 4; // skip over \r\n\r\n
+
+            conn->readBuff.tail = p - conn->readBuff.buff;
+            conn->content = p;
 
         }
 
-        eof = eof || (strcmp(&conn->readBuff.buff[conn->readBuff.head - 2], "\n\n") == 0);
-        if (eof) {
-            std::cout << conn->readBuff.buff;
+        if (conn->chunked) {
+            if (strcmp(&conn->readBuff.buff[conn->readBuff.head - 5], "0\r\n\r\n") == 0) {
+                std::cout << "end\n";
+
+                // TODO: remove and check sizes
+                // TODO: segmentation fault on release build - (-O3)
+
+                conn->write_cb(conn->content, conn->extra_cb);
+                conn->connectionStatus = CONN_DONE;
+            }
+        } else if (strcmp(&conn->readBuff.buff[conn->readBuff.head - 4], "\r\n\r\n") == 0) {
+            conn->write_cb(conn->content, conn->extra_cb);
             conn->connectionStatus = CONN_DONE;
-            exit(0);
         }
+
 
     } else if (conn->connectionStatus == CONN_TLS_HANDSHAKE) {
         char buffer[80];
@@ -142,9 +144,7 @@ static void snow_io_read_cb(struct ev_loop *loop, struct ev_io *w, int revents) 
 }
 
 static void snow_io_write_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
-
-    auto *p = (struct ev_io_snow *) w;
-    auto *conn = (struct snow_connection_t *) p->data;
+    auto *conn = (struct snow_connection_t *) ((struct ev_io_snow *) w)->data;
 
     if (conn->connectionStatus == CONN_IN_PROGRESS) {
         int conn_r = connect(conn->sockfd, (struct sockaddr *) &conn->address, sizeof(conn->address));
@@ -174,11 +174,12 @@ static void snow_io_write_cb(struct ev_loop *loop, struct ev_io *w, int revents)
     }
 
     if (conn->connectionStatus == CONN_READY && !buff_empty(&conn->writeBuff)) {
-        int rem = buff_pull_to_sock(&conn->writeBuff, conn->secure ? (void *) conn->ssl : (void *) &conn->sockfd, buff_to_pull(&conn->writeBuff), conn->secure);
+        int rem = buff_pull_to_sock(&conn->writeBuff, conn->secure ? (void *) conn->ssl : (void *) &conn->sockfd, buff_to_pull(&conn->writeBuff),
+                                    conn->secure);
 
         if (rem == 0) conn->connectionStatus = CONN_WAITING;
 
-        std::cerr << "rem = "<< rem<<"\n";
+        std::cerr << "rem = " << rem << "\n";
     }
 
 }
@@ -258,13 +259,15 @@ void snow_sendRequest(snow_global_t *global, snow_connection_t *conn) {
     std::cerr << buff << "\n";
 }
 
-void snow_do(snow_global_t *global, int method, const char *url) {
+void snow_do(snow_global_t *global, int method, const char *url, void (*write_cb)(char *data, void *extra), void *extra) {
     int id = global->newConnId;
     snow_connection_t *conn = &global->connections[id];
     conn->global = global;
 
     strcpy(conn->requestUrl, url);
     conn->method = method;
+    conn->write_cb = write_cb;
+    conn->extra_cb = extra;
 
     snow_parseUrl(global, conn);
     snow_resolveHost(global, conn);
@@ -288,6 +291,7 @@ void snow_init(snow_global_t *global) {
         fprintf(stderr, "Error loading /etc/ssl/certs/ca-certificates.crt");
         assert(0);
     }
+
 }
 
 void snow_destroy(snow_global_t *global) {

@@ -12,14 +12,16 @@ static void signal_cb(struct ev_loop *loop, ev_signal *w, int revents) {
     }
 }
 
-int i = 0;
+void http_cb(char *data, void *extra){
+    printf("%s\n", data);
+}
 
 snow_global_t global;
-
 static void loop_cb(struct ev_loop *loop) {
+    static int i = 0;
     if(i == 1){
         char url[256] = "https://api.binance.com/api/v3/exchangeInfo";
-        snow_do(&global, GET, url);
+        snow_do(&global, GET, url, http_cb, nullptr);
     }
     i++;
 }
@@ -32,7 +34,6 @@ int main() {
     struct ev_signal signal_watcher{};
     ev_signal_init(&signal_watcher, signal_cb, SIGINT);
     ev_signal_start(global.loop, &signal_watcher);
-
 
     snow_init(&global);
 
