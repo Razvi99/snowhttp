@@ -1,11 +1,12 @@
 #pragma once
 
+#include <map>
 #include "wolfssl/ssl.h"
 #include "events.h"
 
 const int concurrentConnections = 2500;
 const int connUrlSize = 256;
-const int connBufferSize = 1<<17U;
+const int connBufferSize = 1 << 15U;
 
 enum method_enum {
     GET, POST, DELETE
@@ -14,7 +15,9 @@ enum method_enum {
 struct snow_global_t;
 
 void snow_init(snow_global_t *global);
+
 void snow_destroy(snow_global_t *global);
+
 void snow_do(snow_global_t *global, int method, const char *url, void (*write_cb)(char *data, size_t dataLen, void *extra), void *extra);
 
 #define DISABLE_NAGLE
@@ -52,16 +55,15 @@ struct ev_io_snow {
 
 struct snow_connection_t {
     char requestUrl[connUrlSize] = {};
-    char *protocol = nullptr, *hostname = nullptr, *path = nullptr;
+    char *protocol = nullptr, *hostname = nullptr, *path = nullptr, *portPtr = nullptr;
     int port = 0;
     int method = 0;
     bool secure = false;
 
-    struct hostent hostent = {};
-    char hostentBuff[2048] = {};
+    struct addrinfo *addrinfo = nullptr;
+    struct addrinfo hints = {};
 
     int sockfd = 0;
-    struct sockaddr_in address = {};
     int connectionStatus = 0;
 
     WOLFSSL *ssl{};
@@ -76,6 +78,7 @@ struct snow_connection_t {
     bool chunked = false;
 
     void *extra_cb = nullptr;
+
     void (*write_cb)(char *data, size_t data_len, void *extra){};
 
     snow_global_t *global{};
@@ -86,6 +89,7 @@ struct snow_global_t {
     WOLFSSL_CTX *wolfCtx = nullptr;
 
     struct ev_timer timer = {};
+    std::map<std::string, struct addrinfo *> addrCache;
 
     int newConnId = 0;
     snow_connection_t connections[concurrentConnections];

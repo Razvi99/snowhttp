@@ -164,6 +164,7 @@ void snow_parseUrl(snow_connection_t *conn) {
         conn->path++;
 
         conn->port = atoi(it + 1);
+        conn->portPtr = it + 1;
 
     } else { // no port
         conn->hostname = protocol_end + 3;
@@ -173,30 +174,39 @@ void snow_parseUrl(snow_connection_t *conn) {
 
     if (conn->port == 0) {
         if (strcmp(conn->protocol, "http") == 0)
-            conn->port = 80, conn->secure = false;
+            conn->port = 80, conn->portPtr = "80", conn->secure = false;
         else if (strcmp(conn->protocol, "https") == 0)
-            conn->port = 443, conn->secure = true;
+            conn->port = 443, conn->portPtr = "443", conn->secure = true;
         else
             assert(0);
     }
 }
 
 void snow_resolveHost(snow_connection_t *conn) {
-    int error;
-    struct hostent *result;
+    std::string hostPort = conn->hostname;
+    hostPort.append(conn->portPtr);
 
-    gethostbyname_r(conn->hostname, &conn->hostent, conn->hostentBuff, 2048, &result, &error);
+    auto it = conn->global->addrCache.find(hostPort);
 
-    if (SNOW_UNLIKELY(result == nullptr)) {
-        std::cerr << "Hostname resolve error: " << error << "\n";
-        assert(0);
+    if (it != conn->global->addrCache.end()) {
+        conn->addrinfo = it->second;
+    }
+    else {
+        conn->hints.ai_family = AF_INET;
+        conn->hints.ai_socktype = SOCK_STREAM;
+        conn->hints.ai_flags |= AI_NUMERICSERV;
+
+        int ret = getaddrinfo(conn->hostname, conn->portPtr, &conn->hints, &conn->addrinfo);
+
+        if (SNOW_UNLIKELY(ret != 0)) {
+            std::cerr << "Hostname resolve error: " << ret << "\n";
+            assert(0);
+        }
+
+        conn->global->addrCache.insert({hostPort, conn->addrinfo});
     }
 
-    bzero(&conn->address, sizeof(conn->address));
 
-    memcpy(&conn->address.sin_addr, conn->hostent.h_addr_list[0], conn->hostent.h_length);
-    conn->address.sin_family = AF_INET;
-    conn->address.sin_port = htons(conn->port);
 }
 
 void snow_startTLSHandshake(snow_global_t *global, snow_connection_t *conn) {
@@ -270,14 +280,18 @@ static void snow_io_read_cb(struct ev_loop *loop, struct ev_io *w, int revents) 
                 conn->connectionStatus = CONN_DONE;
 
                 ev_io_stop(loop, (struct ev_io *) &conn->ior);
-                if(conn->secure) wolfSSL_free(conn->ssl);
+                if (conn->secure) wolfSSL_free(conn->ssl);
+                close(conn->sockfd);
+                //freeaddrinfo(conn->addrinfo);
             }
         } else if (strcmp(&conn->readBuff.buff[conn->readBuff.head - 1], "\n") == 0) {
             conn->write_cb(conn->content, 0, conn->extra_cb);
             conn->connectionStatus = CONN_DONE;
 
             ev_io_stop(loop, (struct ev_io *) &conn->ior);
-            if(conn->secure) wolfSSL_free(conn->ssl);
+            if (conn->secure) wolfSSL_free(conn->ssl);
+            close(conn->sockfd);
+            //freeaddrinfo(conn->addrinfo);
         }
 
 
@@ -315,7 +329,7 @@ static void snow_io_write_cb(struct ev_loop *loop, struct ev_io *w, int revents)
     }
 
     if (conn->connectionStatus == CONN_IN_PROGRESS) {
-        int conn_r = connect(conn->sockfd, (struct sockaddr *) &conn->address, sizeof(conn->address));
+        int conn_r = connect(conn->sockfd, conn->addrinfo->ai_addr, conn->addrinfo->ai_addrlen);
         if (conn_r == 0) {
             conn->connectionStatus = CONN_ACK;
             if (conn->secure)
@@ -342,28 +356,32 @@ static void snow_io_write_cb(struct ev_loop *loop, struct ev_io *w, int revents)
 }
 
 void snow_initConnection(snow_connection_t *conn) {
-    conn->sockfd = socket(conn->address.sin_family, SOCK_STREAM | SOCK_NONBLOCK, 0); // nonblocking sock
     conn->connectionStatus = CONN_UNREADY;
+
+    conn->sockfd = socket(conn->addrinfo->ai_family, conn->addrinfo->ai_socktype, conn->addrinfo->ai_protocol);
 
 #ifdef DISABLE_NAGLE
     int flag = 1;
     setsockopt(conn->sockfd, IPPROTO_TCP, TCP_NODELAY, (char *) &flag, sizeof(int));
 #endif
 
+    int ret = fcntl(conn->sockfd, F_SETFL, fcntl(conn->sockfd, F_GETFL, 0) | O_NONBLOCK);
+    if (SNOW_UNLIKELY(ret == -1)) {
+        std::cerr << "nonblock set error\n";
+        assert(0);
+    }
+
     ev_io_init((struct ev_io *) &conn->ior, snow_io_read_cb, conn->sockfd, EV_READ);
     ev_io_init((struct ev_io *) &conn->iow, snow_io_write_cb, conn->sockfd, EV_WRITE);
     conn->ior.data = conn;
     conn->iow.data = conn;
-
-    static char str[1000];
-    inet_ntop(AF_INET, &conn->address.sin_addr, str, INET_ADDRSTRLEN);
 
     if (SNOW_UNLIKELY(conn->sockfd == -1)) {
         std::cerr << "Socket creation failed\n";
         assert(0);
     }
 
-    int conn_r = connect(conn->sockfd, (struct sockaddr *) &conn->address, sizeof(conn->address));
+    int conn_r = connect(conn->sockfd, conn->addrinfo->ai_addr, conn->addrinfo->ai_addrlen);
     conn->connectionStatus = CONN_IN_PROGRESS;
 
     if (SNOW_UNLIKELY(conn_r != 0 && errno != EINPROGRESS)) {

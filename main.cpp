@@ -1,7 +1,6 @@
 #include <iostream>
 #include <cstring>
 #include <chrono>
-#include <fstream>
 
 #include "lib/snowhttp.h"
 
@@ -18,13 +17,13 @@ auto start = std::chrono::steady_clock::now();
 
 int recvcb = 0;
 
-const int req_test_n = 10;
+const int req_test_n = 160;
 
 void http_cb(char *data, size_t len, void *extra) {
     recvcb++;
 
-    setbuf(stdout, NULL);
-    printf("%.*s\n", len, data);
+    //setbuf(stdout, NULL);
+    //printf("%.*s\n", len, data);
 
     if (recvcb == req_test_n) {
         auto end = std::chrono::steady_clock::now();
@@ -63,7 +62,7 @@ void timercb(struct ev_loop *loop, struct ev_timer *w, int revents) {
     start = std::chrono::steady_clock::now();
 
     for (int i = 0; i < req_test_n; i++) {
-        char url[256] = "https://api.binance.com/api/v3/time";
+        char url[256] = "https://api.binance.com/api/v3/ping";
         idArr[i] = i;
         snow_do(&global, GET, url, http_cb, &idArr[i]);
     }
@@ -82,7 +81,7 @@ int main() {
     snow_init(&global);
 
     //ev_timer timer{};
-    //ev_timer_init(&timer, timercb, 0, 5);
+    //ev_timer_init(&timer, timercb, 0, 20);
     //ev_timer_start(global.loop, &timer);
 
     ev_run(global.loop, loop_cb);
