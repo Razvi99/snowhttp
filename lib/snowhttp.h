@@ -1,19 +1,31 @@
 #pragma once
 
-#include <cstdint>
-#include <netinet/in.h>
-#include <netdb.h>
-#include <wolfssl/ssl.h>
+#include "wolfssl/ssl.h"
 #include "events.h"
-#include "staticbuffers.h"
 
-const int concurrentConnections = 10;
-const int connectionUrlSize = 256;
-const int connectionRequestBuffSize = 1024;
+const int concurrentConnections = 2500;
+const int connUrlSize = 256;
+const int connBufferSize = 1<<17U;
 
 enum method_enum {
-    GET, POST, DELTE
+    GET, POST, DELETE
 };
+
+struct snow_global_t;
+
+void snow_init(snow_global_t *global);
+void snow_destroy(snow_global_t *global);
+void snow_do(snow_global_t *global, int method, const char *url, void (*write_cb)(char *data, size_t dataLen, void *extra), void *extra);
+
+#define DISABLE_NAGLE
+
+/////////////////////////////////////////////////////
+
+#define BUFFSIZE connBufferSize
+
+#define SNOW_LIKELY(x) __builtin_expect(!!(x), 1)
+#define SNOW_UNLIKELY(x) __builtin_expect(!!(x), 0)
+
 const char method_strings[3][10] = {"GET", "POST", "DELETE"};
 
 enum conn_status_enum {
@@ -27,60 +39,54 @@ enum conn_status_enum {
     CONN_DONE // received http response
 };
 
+struct buff_static_t {
+    char buff[connBufferSize] = {};
+    size_t tail = 0;
+    size_t head = 0;
+};
+
 struct ev_io_snow {
     struct ev_io io;
     void *data;
 };
 
-struct snow_global_t;
-
 struct snow_connection_t {
-    // protocol://hostname:port/path-and-file-name
-    char requestUrl[connectionUrlSize] = {};
-    char *protocol, *hostname, *path;
+    char requestUrl[connUrlSize] = {};
+    char *protocol = nullptr, *hostname = nullptr, *path = nullptr;
     int port = 0;
     int method = 0;
     bool secure = false;
 
-    char requestBuff[connectionRequestBuffSize];
-
-    struct hostent hostent;
+    struct hostent hostent = {};
     char hostentBuff[2048] = {};
 
-    int sockfd, connfd;
-    struct sockaddr_in address;
+    int sockfd = 0;
+    struct sockaddr_in address = {};
     int connectionStatus = 0;
 
-    WOLFSSL *ssl;
+    WOLFSSL *ssl{};
 
-    struct ev_io_snow ior, iow;
+    struct ev_io_snow ior = {}, iow = {};
 
     buff_static_t writeBuff;
     buff_static_t readBuff;
 
-    char *content;
+    char *content = nullptr;
     size_t contentLen = 0;
     bool chunked = false;
-    bool chunkEnd = false;
 
-    void *extra_cb;
-    void (*write_cb)(char *data, void *extra);
+    void *extra_cb = nullptr;
+    void (*write_cb)(char *data, size_t data_len, void *extra){};
 
-    snow_global_t *global;
+    snow_global_t *global{};
 };
 
 struct snow_global_t {
-    ev_loop *loop;
+    ev_loop *loop = nullptr;
     WOLFSSL_CTX *wolfCtx = nullptr;
 
-    struct ev_timer timer;
+    struct ev_timer timer = {};
 
     int newConnId = 0;
     snow_connection_t connections[concurrentConnections];
 };
-
-void snow_init(snow_global_t *global);
-
-void snow_destroy(snow_global_t *global);
-
-void snow_do(snow_global_t *global, int method, const char *url, void (*write_cb)(char *data, void *extra), void *extra);

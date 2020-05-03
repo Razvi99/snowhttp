@@ -6,7 +6,6 @@
 #include <time.h>
 #include <string.h>
 #include "events.h"
-#include "log.h"
 
 
 static uint64_t ev_now_us() {

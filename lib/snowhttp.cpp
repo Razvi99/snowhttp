@@ -1,17 +1,147 @@
-#include <cstring>
-#include <cassert>
-#include <cstdlib>
-#include <iostream>
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <wolfssl/ssl.h>
-#include "netinet/tcp.h"
-
 #include "snowhttp.h"
 
-void snow_parseUrl(snow_global_t *global, snow_connection_t *conn) {
+#include <iostream>
+
+#include <cassert>
+#include <cerrno>
+#include <climits>
+#include <netinet/tcp.h>
+
+bool buff_put(struct buff_static_t *buff, char *data, size_t dataSize) {
+    if (buff->head + dataSize > BUFFSIZE)
+        return false;
+
+    memcpy(&buff->buff[buff->head], data, dataSize);
+    buff->head += dataSize;
+    return true;
+}
+
+bool buff_pull(struct buff_static_t *buff, void *dest, size_t size) {
+    if (buff->tail + size > BUFFSIZE)
+        return false;
+
+    buff->tail += size;
+    memcpy(dest, &buff->buff[buff->tail], size);
+    return true;
+}
+
+int buff_to_pull(struct buff_static_t *buff) {
+    return buff->head - buff->tail;
+}
+
+bool buff_empty(struct buff_static_t *buff) {
+    return buff->head == buff->tail;
+}
+
+size_t buff_pull_to_sock(struct buff_static_t *buff, void *f, size_t size, bool ssl) {
+    size_t remain;
+
+    if (buff->tail + size > BUFFSIZE) {
+        std::cerr << "ERR: send buffer too small\n";
+        assert(0);
+    }
+
+    remain = size;
+
+    while (remain > 0) {
+        ssize_t ret;
+
+        if (ssl) {
+            ret = wolfSSL_write((WOLFSSL *) f, &buff->buff[buff->tail], remain);
+
+            if (ret == -1) {
+                int err = wolfSSL_get_error((WOLFSSL *) f, ret);
+
+                if (err == WOLFSSL_ERROR_WANT_WRITE)
+                    break;
+                else {
+                    char buffer[256];
+                    fprintf(stderr, "sock put error = %d, %s\n", err, wolfSSL_ERR_error_string(err, buffer));
+                    assert(0);
+                }
+            }
+        } else {
+            ret = write(*(int *) f, &buff->buff[buff->tail], remain);
+            if (ret < 0) {
+                if (errno == EINTR)
+                    continue;
+
+                if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOTCONN)
+                    break;
+
+                return -1;
+            }
+        }
+
+        remain -= ret;
+        buff->tail += ret;
+    }
+
+    return remain;
+}
+
+size_t buff_put_from_sock(struct buff_static_t *buff, void *f, int size, bool ssl) {
+
+    size_t remain, total = 0;
+
+    if (size < 0)
+        size = INT_MAX;
+
+    remain = size;
+
+    while (remain) {
+        ssize_t ret;
+        size_t head_room = BUFFSIZE - buff->head;
+
+        if (head_room <= 0) {
+            std::cerr << "ERR: receive buffer too small\n";
+            assert(0);
+        }
+
+        if (ssl) {
+            ret = wolfSSL_read((WOLFSSL *) f, &buff->buff[buff->head], head_room);
+
+            if (ret == -1) {
+                int err = wolfSSL_get_error((WOLFSSL *) f, ret);
+
+                if (err == WOLFSSL_ERROR_WANT_READ)
+                    break;
+                else {
+                    char buffer[256];
+                    fprintf(stderr, "sock put error = %d, %s\n", err, wolfSSL_ERR_error_string(err, buffer));
+                    assert(0);
+                }
+            }
+        } else {
+            ret = read(*(int *) f, &buff->buff[buff->head], head_room);
+            if (ret < 0) {
+                if (errno == EINTR)
+                    continue;
+
+                if (errno == EAGAIN || errno == ENOTCONN || errno == EWOULDBLOCK)
+                    break;
+
+                assert(0);
+            }
+
+        }
+
+        if (!ret) {
+            assert(0); // conn closed?
+            break;
+        }
+
+        assert(ret > 0);
+
+        buff->head += ret;
+        remain -= ret;
+        total += ret;
+
+    }
+    return total;
+}
+
+void snow_parseUrl(snow_connection_t *conn) {
     char *protocol_end = strstr(conn->requestUrl, "://");
     if (protocol_end != nullptr) {
         conn->protocol = conn->requestUrl;
@@ -51,13 +181,13 @@ void snow_parseUrl(snow_global_t *global, snow_connection_t *conn) {
     }
 }
 
-void snow_resolveHost(snow_global_t *global, snow_connection_t *conn) {
+void snow_resolveHost(snow_connection_t *conn) {
     int error;
     struct hostent *result;
 
     gethostbyname_r(conn->hostname, &conn->hostent, conn->hostentBuff, 2048, &result, &error);
 
-    if (result == nullptr) {
+    if (SNOW_UNLIKELY(result == nullptr)) {
         std::cerr << "Hostname resolve error: " << error << "\n";
         assert(0);
     }
@@ -70,7 +200,7 @@ void snow_resolveHost(snow_global_t *global, snow_connection_t *conn) {
 }
 
 void snow_startTLSHandshake(snow_global_t *global, snow_connection_t *conn) {
-    if ((conn->ssl = wolfSSL_new(global->wolfCtx)) == nullptr) {
+    if ((SNOW_UNLIKELY((conn->ssl = wolfSSL_new(global->wolfCtx)) == nullptr))) {
         fprintf(stderr, "wolfSSL_new error.\n");
         assert(0);
     }
@@ -84,7 +214,7 @@ void snow_startTLSHandshake(snow_global_t *global, snow_connection_t *conn) {
 static void snow_io_read_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
     auto *conn = (struct snow_connection_t *) ((struct ev_io_snow *) w)->data;
 
-    if (conn->connectionStatus == CONN_WAITING || conn->connectionStatus == CONN_RECEIVING) {
+    if (SNOW_LIKELY(conn->connectionStatus == CONN_WAITING || conn->connectionStatus == CONN_RECEIVING)) {
         size_t readSize = buff_put_from_sock(&conn->readBuff, conn->secure ? (void *) conn->ssl : (void *) &conn->sockfd, -1, conn->secure);
 
         if (!readSize) return; // no read
@@ -98,7 +228,7 @@ static void snow_io_read_cb(struct ev_loop *loop, struct ev_io *w, int revents) 
 
             char *p = strstr(&conn->readBuff.buff[conn->readBuff.tail], "\r\n\r\n");
 
-            if (p == nullptr) {
+            if (SNOW_UNLIKELY(p == nullptr)) {
                 std::cerr << "ERR: could not find the end of headers\n";
                 assert(0);
             }
@@ -110,41 +240,79 @@ static void snow_io_read_cb(struct ev_loop *loop, struct ev_io *w, int revents) 
 
         }
 
-        if (conn->chunked) {
+        if ((conn->chunked)) {
             if (strcmp(&conn->readBuff.buff[conn->readBuff.head - 5], "0\r\n\r\n") == 0) {
-                std::cout << "end\n";
+                char *chunkBegin = conn->content;
+                char *newCopyStart = chunkBegin;
 
-                // TODO: remove and check sizes
-                // TODO: segmentation fault on release build - (-O3)
+                // parse chunks & verify sizes
+                while (chunkBegin < conn->readBuff.buff + conn->readBuff.head) {
+                    size_t chunkLen = strtol(chunkBegin, nullptr, 16);
+                    conn->contentLen += chunkLen;
 
-                conn->write_cb(conn->content, conn->extra_cb);
+                    char *chunkData = strstr(chunkBegin, "\r\n");
+                    if (!chunkData) assert(0);
+
+                    chunkData += 2; // skip \r\n
+
+                    memcpy(newCopyStart, chunkData, chunkLen); // copy & compute next copy location
+                    newCopyStart += chunkLen;
+
+                    assert(chunkData[chunkLen] == '\r' && chunkData[chunkLen + 1] == '\n'); // end of chunk
+                    chunkBegin = chunkData + chunkLen + 2; // skip to new beginning
+                }
+                *newCopyStart = 0; // terminate string
+                conn->readBuff.head = newCopyStart - conn->readBuff.buff + 1; // reclaim some buff space
+
+                assert(conn->contentLen == newCopyStart - conn->content); // got all data
+
+                conn->write_cb(conn->content, conn->contentLen, conn->extra_cb);
                 conn->connectionStatus = CONN_DONE;
+
+                ev_io_stop(loop, (struct ev_io *) &conn->ior);
+                if(conn->secure) wolfSSL_free(conn->ssl);
             }
-        } else if (strcmp(&conn->readBuff.buff[conn->readBuff.head - 4], "\r\n\r\n") == 0) {
-            conn->write_cb(conn->content, conn->extra_cb);
+        } else if (strcmp(&conn->readBuff.buff[conn->readBuff.head - 1], "\n") == 0) {
+            conn->write_cb(conn->content, 0, conn->extra_cb);
             conn->connectionStatus = CONN_DONE;
+
+            ev_io_stop(loop, (struct ev_io *) &conn->ior);
+            if(conn->secure) wolfSSL_free(conn->ssl);
         }
 
 
     } else if (conn->connectionStatus == CONN_TLS_HANDSHAKE) {
-        char buffer[80];
         int ret = wolfSSL_connect(conn->ssl);
-        int err;
-        if (ret != SSL_SUCCESS) {
-            err = wolfSSL_get_error(conn->ssl, ret);
+
+        if (SNOW_UNLIKELY(ret != SSL_SUCCESS)) {
+            char buffer[80];
+            int err = wolfSSL_get_error(conn->ssl, ret);
             if (err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
                 fprintf(stderr, "error = %d, %s\n", err, wolfSSL_ERR_error_string(err, buffer));
                 assert(0);
             }
         } else {
             conn->connectionStatus = CONN_READY;
-            std::cerr << "TLS handshake finished\n";
         }
     }
 }
 
 static void snow_io_write_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
     auto *conn = (struct snow_connection_t *) ((struct ev_io_snow *) w)->data;
+
+    if (conn->connectionStatus > CONN_READY) return;
+
+    if (conn->connectionStatus == CONN_READY && !buff_empty(&conn->writeBuff)) {
+        int rem = buff_pull_to_sock(&conn->writeBuff, conn->secure ? (void *) conn->ssl : (void *) &conn->sockfd, buff_to_pull(&conn->writeBuff),
+                                    conn->secure);
+
+        if (rem == 0) {
+            conn->connectionStatus = CONN_WAITING;
+            ev_io_stop(loop, (struct ev_io *) &conn->iow);
+        }
+
+        return;
+    }
 
     if (conn->connectionStatus == CONN_IN_PROGRESS) {
         int conn_r = connect(conn->sockfd, (struct sockaddr *) &conn->address, sizeof(conn->address));
@@ -153,61 +321,44 @@ static void snow_io_write_cb(struct ev_loop *loop, struct ev_io *w, int revents)
             if (conn->secure)
                 snow_startTLSHandshake(conn->global, conn);
             else conn->connectionStatus = CONN_READY;
-            std::cerr << "Connection ack\n";
         };
     }
 
     if (conn->connectionStatus == CONN_TLS_HANDSHAKE) {
-        char buffer[80];
         int ret = wolfSSL_connect(conn->ssl);
-        int err;
-        if (ret != SSL_SUCCESS) {
-            err = wolfSSL_get_error(conn->ssl, ret);
+
+        if (SNOW_UNLIKELY(ret != SSL_SUCCESS)) {
+            char buffer[80];
+            int err = wolfSSL_get_error(conn->ssl, ret);
             if (err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
                 fprintf(stderr, "error = %d, %s\n", err, wolfSSL_ERR_error_string(err, buffer));
                 assert(0);
             }
         } else {
             conn->connectionStatus = CONN_READY;
-            std::cerr << "TLS handshake finished\n";
         }
     }
 
-    if (conn->connectionStatus == CONN_READY && !buff_empty(&conn->writeBuff)) {
-        int rem = buff_pull_to_sock(&conn->writeBuff, conn->secure ? (void *) conn->ssl : (void *) &conn->sockfd, buff_to_pull(&conn->writeBuff),
-                                    conn->secure);
-
-        if (rem == 0) conn->connectionStatus = CONN_WAITING;
-
-        std::cerr << "rem = " << rem << "\n";
-    }
-
 }
 
-static void snow_timer_cb(struct ev_loop *loop, struct ev_timer *w, int revents) {
-    std::cout << "time\n";
-}
-
-void snow_initConnection(snow_global_t *global, snow_connection_t *conn) {
-    conn->sockfd = socket(conn->address.sin_family, SOCK_STREAM, 0);
+void snow_initConnection(snow_connection_t *conn) {
+    conn->sockfd = socket(conn->address.sin_family, SOCK_STREAM | SOCK_NONBLOCK, 0); // nonblocking sock
     conn->connectionStatus = CONN_UNREADY;
 
-    int flag = 1; // disable nagle
+#ifdef DISABLE_NAGLE
+    int flag = 1;
     setsockopt(conn->sockfd, IPPROTO_TCP, TCP_NODELAY, (char *) &flag, sizeof(int));
-
-    fcntl(conn->sockfd, F_SETFL, fcntl(conn->sockfd, F_GETFL, 0) | O_NONBLOCK); // set socket to non blocking
+#endif
 
     ev_io_init((struct ev_io *) &conn->ior, snow_io_read_cb, conn->sockfd, EV_READ);
     ev_io_init((struct ev_io *) &conn->iow, snow_io_write_cb, conn->sockfd, EV_WRITE);
     conn->ior.data = conn;
     conn->iow.data = conn;
 
-    char str[1000];
+    static char str[1000];
     inet_ntop(AF_INET, &conn->address.sin_addr, str, INET_ADDRSTRLEN);
-    std::cerr << str << "\n";
 
-
-    if (conn->sockfd == -1) {
+    if (SNOW_UNLIKELY(conn->sockfd == -1)) {
         std::cerr << "Socket creation failed\n";
         assert(0);
     }
@@ -215,53 +366,35 @@ void snow_initConnection(snow_global_t *global, snow_connection_t *conn) {
     int conn_r = connect(conn->sockfd, (struct sockaddr *) &conn->address, sizeof(conn->address));
     conn->connectionStatus = CONN_IN_PROGRESS;
 
-    if (conn_r != 0 && errno != EINPROGRESS) {
+    if (SNOW_UNLIKELY(conn_r != 0 && errno != EINPROGRESS)) {
         std::cerr << "Socket connection failed: " << errno << "\n";
         assert(0);
     }
 
-    ev_io_start(global->loop, (struct ev_io *) &conn->ior);
-    ev_io_start(global->loop, (struct ev_io *) &conn->iow);
-
-    ev_timer_init(&global->timer, snow_timer_cb, 0.0, 1.0);
-    //ev_timer_start(global->loop, &global->timer);
+    ev_io_start(conn->global->loop, (struct ev_io *) &conn->ior);
+    ev_io_start(conn->global->loop, (struct ev_io *) &conn->iow);
 }
 
-void snow_sendRequest(snow_global_t *global, snow_connection_t *conn) {
+void snow_sendRequest(snow_connection_t *conn) {
 
-    int size = sprintf(conn->requestBuff, "%s /%s HTTP/1.1\r\nHost: %s\r\n\r\n", method_strings[conn->method], conn->path, conn->hostname);
+    int size = sprintf(conn->writeBuff.buff, "%s /%s HTTP/1.1\r\nHost: %s\r\n\r\n",
+                       method_strings[conn->method], conn->path, conn->hostname);
 
-    /* if (wolfSSL_write(conn->ssl, conn->requestBuff, size) != size) {
-         std::cerr << "wolfSSL_write failed\n";
-         char buffer[80];
-         int err = wolfSSL_get_error(conn->ssl, 0);
-         wolfSSL_ERR_error_string(err, buffer);
-         printf("%s\n", buffer);
-         assert(0);
-     }*/
-    buff_put(&conn->writeBuff, conn->requestBuff, size);
-    //write(conn->sockfd, conn->requestBuff, size);
-    return;
-    char buff[100000] = {};
+    conn->writeBuff.head += size;
 
-    if (wolfSSL_read(conn->ssl, buff, sizeof(buff)) <= 0) {
-        std::cerr << "wolfSSL_write failed\n";
-        char buffer[80];
-        int err = wolfSSL_get_error(conn->ssl, 0);
-        wolfSSL_ERR_error_string(err, buffer);
-        printf("%s\n", buffer);
-        assert(0);
-    }
-    wolfSSL_free(conn->ssl);
-
-    //read(conn->sockfd, buff, sizeof(buff));
-
-    std::cerr << buff << "\n";
 }
 
-void snow_do(snow_global_t *global, int method, const char *url, void (*write_cb)(char *data, void *extra), void *extra) {
+void snow_do(snow_global_t *global, int method, const char *url, void (*write_cb)(char *data, size_t data_len, void *extra), void *extra) {
     int id = global->newConnId;
     snow_connection_t *conn = &global->connections[id];
+
+    if (SNOW_UNLIKELY(conn->connectionStatus != CONN_UNREADY && conn->connectionStatus != CONN_DONE)) {
+        std::cerr << "caught back to conn buff\n";
+        assert(0);
+    }
+
+    memset(conn, 0, sizeof(snow_connection_t));
+
     conn->global = global;
 
     strcpy(conn->requestUrl, url);
@@ -269,10 +402,10 @@ void snow_do(snow_global_t *global, int method, const char *url, void (*write_cb
     conn->write_cb = write_cb;
     conn->extra_cb = extra;
 
-    snow_parseUrl(global, conn);
-    snow_resolveHost(global, conn);
-    snow_initConnection(global, conn);
-    snow_sendRequest(global, conn);
+    snow_parseUrl(conn);
+    snow_resolveHost(conn);
+    snow_initConnection(conn);
+    snow_sendRequest(conn);
 
     global->newConnId++;
     global->newConnId %= concurrentConnections;
@@ -281,7 +414,9 @@ void snow_do(snow_global_t *global, int method, const char *url, void (*write_cb
 void snow_init(snow_global_t *global) {
     wolfSSL_Init();
 
-    if ((global->wolfCtx = wolfSSL_CTX_new(wolfTLSv1_2_client_method())) == nullptr) {
+    global->wolfCtx = wolfSSL_CTX_new(wolfTLSv1_2_client_method());
+
+    if (global->wolfCtx == nullptr) {
         fprintf(stderr, "wolfSSL_CTX_new error.\n");
         assert(0);
     }
