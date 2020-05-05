@@ -3,8 +3,8 @@ project(snowhttp)
 
 set(CMAKE_CXX_STANDARD 17)
 
-set(CMAKE_CXX_FLAGS_RELEASE "-Ofast")
-#set(CMAKE_CXX_FLAGS "-lrt")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3")
+#set(CMAKE_CXX_FLAGS "-lpthread")
 
 file(GLOB SOURCES
         include ./lib/*.h
@@ -14,7 +14,9 @@ file(GLOB SOURCES
 
 include_directories(snowhttp "lib/*" "./lib/wolf/wolfssl-4.2.0/")
 
+find_package (Threads)
+
 message("SOURCES = ${SOURCES}")
 add_executable(snowhttp main.cpp ${SOURCES})
 
-target_link_libraries(snowhttp /home/razvi/Documents/quant/snowhttp/lib/wolf/libwolfssl.a)
+target_link_libraries(snowhttp /home/razvi/Documents/quant/snowhttp/lib/wolf/libwolfssl.a ${CMAKE_THREAD_LIBS_INIT})

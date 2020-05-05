@@ -1,12 +1,20 @@
 #pragma once
 
 #include <map>
+#include <queue>
+#include <stack>
 #include "wolfssl/ssl.h"
 #include "events.h"
 
-const int concurrentConnections = 2500;
-const int connUrlSize = 256;
-const int connBufferSize = 1 << 15U;
+
+constexpr int concurrentConnections = 512;
+constexpr int connUrlSize = 256;
+constexpr int connBufferSize = 1 << 15U;
+constexpr int connSockPriority = 6;
+constexpr double queueCheckInterval = 0.001; // 1ms
+
+#define DISABLE_NAGLE
+#define QUEUEING_ENABLED
 
 enum method_enum {
     GET, POST, DELETE
@@ -18,9 +26,13 @@ void snow_init(snow_global_t *global);
 
 void snow_destroy(snow_global_t *global);
 
-void snow_do(snow_global_t *global, int method, const char *url, void (*write_cb)(char *data, size_t dataLen, void *extra), void *extra);
+void snow_do(snow_global_t *global, int method, const char *url, void (*write_cb)(char *data, size_t data_len, void *extra), void *extra = nullptr,
+             const char *extraHeaders = nullptr, size_t extraHeaders_size = 0);
 
-#define DISABLE_NAGLE
+#ifdef QUEUEING_ENABLED
+void snow_enqueue(snow_global_t *global, int method, const char *url, void (*write_cb)(char *data, size_t data_len, void *extra), void *extra = nullptr,
+             const char *extraHeaders = nullptr, size_t extraHeaders_size = 0);
+#endif
 
 /////////////////////////////////////////////////////
 
@@ -53,12 +65,24 @@ struct ev_io_snow {
     void *data;
 };
 
+struct ev_timer_snow {
+    struct ev_timer t;
+    void *data;
+};
+
 struct snow_connection_t {
+    int id;
+
     char requestUrl[connUrlSize] = {};
-    char *protocol = nullptr, *hostname = nullptr, *path = nullptr, *portPtr = nullptr;
+    char *protocol = nullptr, *hostname = nullptr, *path = nullptr;
+    const char *portPtr = nullptr;
+
     int port = 0;
     int method = 0;
     bool secure = false;
+
+    const char *extraHeaders = nullptr;
+    size_t extraHeaders_size = 0;
 
     struct addrinfo *addrinfo = nullptr;
     struct addrinfo hints = {};
@@ -79,18 +103,32 @@ struct snow_connection_t {
 
     void *extra_cb = nullptr;
 
-    void (*write_cb)(char *data, size_t data_len, void *extra){};
+    void (*write_cb)(char *data, size_t data_len, void *extra) = nullptr;
 
     snow_global_t *global{};
 };
 
+struct snow_bareRequest_t {
+    int method;
+    const char *requestUrl;
+    void (*write_cb)(char *data, size_t data_len, void *extra);
+    void *cb_extra;
+    const char *extraHeaders;
+    size_t extraHeaders_size;
+};
+
 struct snow_global_t {
-    ev_loop *loop = nullptr;
+    ev_loop *loop = {};
+
     WOLFSSL_CTX *wolfCtx = nullptr;
 
-    struct ev_timer timer = {};
+    struct ev_timer_snow timer = {};
     std::map<std::string, struct addrinfo *> addrCache;
 
-    int newConnId = 0;
     snow_connection_t connections[concurrentConnections];
+
+    struct linger sock_linger0 = {1, 0};
+
+    std::stack<int, std::deque<int>> freeConnections;
+    std::queue<struct snow_bareRequest_t, std::deque<struct snow_bareRequest_t>> requestQueue;
 };
