@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <climits>
 #include <netinet/tcp.h>
+#include <chrono>
 
 bool buff_put(struct buff_static_t *buff, char *data, size_t dataSize) {
     if (buff->head + dataSize > BUFFSIZE)
@@ -209,11 +210,23 @@ void snow_resolveHost(snow_connection_t *conn) {
 }
 
 void snow_startTLSHandshake(snow_global_t *global, snow_connection_t *conn) {
-
     if ((SNOW_UNLIKELY((conn->ssl = wolfSSL_new(global->wolfCtx)) == nullptr))) {
-        fprintf(stderr, "wolfSSL_new error.\n");
+        fprintf(stderr, "ERR: wolfSSL_new error.\n");
         assert(0);
     }
+
+#ifdef TLS_SESSION_REUSE
+    std::string hostPort = conn->hostname;
+    hostPort.append(conn->portPtr);
+
+    auto session = conn->sessions.find(hostPort);
+
+    if (session != conn->sessions.end()) {
+        if (wolfSSL_set_session(conn->ssl, session->second) != SSL_SUCCESS) {
+            fprintf(stderr, "ERR: failed to set cached session\n");
+        }
+    }
+#endif
 
     wolfSSL_set_fd(conn->ssl, conn->sockfd);
     wolfSSL_set_using_nonblock(conn->ssl, 1);
@@ -223,7 +236,7 @@ void snow_startTLSHandshake(snow_global_t *global, snow_connection_t *conn) {
 
 void snow_terminateConn(snow_connection_t *conn) {
     conn->connectionStatus = CONN_DONE;
-    conn->write_cb(conn->content, conn->contentLen, conn->extra_cb);
+    if (conn->write_cb) conn->write_cb(conn->content, conn->contentLen, conn->extra_cb);
 
     setsockopt(conn->sockfd, SOL_SOCKET, SO_LINGER, &conn->global->sock_linger0, sizeof(struct linger));
     close(conn->sockfd);
@@ -260,7 +273,12 @@ void snow_parseChunks(snow_connection_t *conn) {
 }
 
 void snow_continueTLSHandshake(snow_connection_t *conn) {
+    auto start = std::chrono::steady_clock::now();
+
     int ret = wolfSSL_connect(conn->ssl);
+
+    auto end = std::chrono::steady_clock::now();
+    tls_compute_total += std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
 
     if (SNOW_UNLIKELY(ret != SSL_SUCCESS)) {
         char buffer[80];
@@ -271,6 +289,16 @@ void snow_continueTLSHandshake(snow_connection_t *conn) {
         }
     } else {
         conn->connectionStatus = CONN_READY;
+
+#ifdef TLS_SESSION_REUSE
+        std::string hostPort = conn->hostname;
+        hostPort.append(conn->portPtr);
+
+        auto session = conn->sessions.find(hostPort);
+        if(session == conn->sessions.end()) {
+            conn->sessions.insert({hostPort, wolfSSL_get_session(conn->ssl)});
+        }
+#endif
     }
 }
 
@@ -319,6 +347,8 @@ static void snow_io_read_cb(struct ev_loop *loop, struct ev_io *w, int revents) 
 
     } else if (conn->connectionStatus == CONN_TLS_HANDSHAKE) {
         snow_continueTLSHandshake(conn);
+    } else if (conn->connectionStatus == CONN_DONE) {
+        ev_io_stop(loop, (struct ev_io *) &conn->ior);
     }
 }
 
@@ -430,11 +460,17 @@ void snow_do(snow_global_t *global, int method, const char *url, void (*write_cb
         return;
     }
 
-    int id = global->freeConnections.top();
+    int id = global->freeConnections.front();
     global->freeConnections.pop();
 
     snow_connection_t *conn = &global->connections[id];
+
+#ifdef TLS_SESSION_REUSE
+    memset(conn, 0, sizeof(struct snow_connection_t) - sizeof(std::map<std::string, WOLFSSL_SESSION*>));
+#else
     memset(conn, 0, sizeof(struct snow_connection_t));
+#endif
+
     conn->id = id;
 
     conn->global = global;
@@ -471,14 +507,19 @@ void snow_init(snow_global_t *global) {
 
     global->wolfCtx = wolfSSL_CTX_new(wolfTLSv1_2_client_method());
 
+    if (wolfSSL_CTX_UseSessionTicket(global->wolfCtx) != SSL_SUCCESS) {
+        fprintf(stderr, "ERR: ticket enable error.\n");
+        assert(0);
+    }
+
     if (global->wolfCtx == nullptr) {
-        fprintf(stderr, "wolfSSL_CTX_new error.\n");
+        fprintf(stderr, "ERR: wolfSSL_CTX_new error.\n");
         assert(0);
     }
 
     // Load CA certificates into WOLFSSL_CTX
     if (wolfSSL_CTX_load_verify_locations(global->wolfCtx, "/etc/ssl/certs/ca-certificates.crt", nullptr) != SSL_SUCCESS) {
-        fprintf(stderr, "Error loading /etc/ssl/certs/ca-certificates.crt");
+        fprintf(stderr, "ERR: Error loading /etc/ssl/certs/ca-certificates.crt");
         assert(0);
     }
 

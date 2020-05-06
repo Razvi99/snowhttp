@@ -3,7 +3,11 @@
 #include <map>
 #include <queue>
 #include <stack>
+
+#include "wolfssl/options.h"
+#include "wolfssl/wolfcrypt/settings.h"
 #include "wolfssl/ssl.h"
+
 #include "events.h"
 
 
@@ -13,8 +17,11 @@ constexpr int connBufferSize = 1 << 15U;
 constexpr int connSockPriority = 6;
 constexpr double queueCheckInterval = 0.001; // 1ms
 
+inline uint64_t tls_compute_total = 0;
+
 #define DISABLE_NAGLE
 #define QUEUEING_ENABLED
+#define TLS_SESSION_REUSE
 
 enum method_enum {
     GET, POST, DELETE
@@ -32,6 +39,9 @@ void snow_do(snow_global_t *global, int method, const char *url, void (*write_cb
 #ifdef QUEUEING_ENABLED
 void snow_enqueue(snow_global_t *global, int method, const char *url, void (*write_cb)(char *data, size_t data_len, void *extra), void *extra = nullptr,
              const char *extraHeaders = nullptr, size_t extraHeaders_size = 0);
+#endif
+
+#ifdef TLS_SESSION_REUSE
 #endif
 
 /////////////////////////////////////////////////////
@@ -106,6 +116,10 @@ struct snow_connection_t {
     void (*write_cb)(char *data, size_t data_len, void *extra) = nullptr;
 
     snow_global_t *global{};
+
+#ifdef TLS_SESSION_REUSE
+    std::map<std::string, WOLFSSL_SESSION*> sessions;
+#endif
 };
 
 struct snow_bareRequest_t {
@@ -129,6 +143,6 @@ struct snow_global_t {
 
     struct linger sock_linger0 = {1, 0};
 
-    std::stack<int, std::deque<int>> freeConnections;
+    std::queue<int, std::deque<int>> freeConnections;
     std::queue<struct snow_bareRequest_t, std::deque<struct snow_bareRequest_t>> requestQueue;
 };
