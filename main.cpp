@@ -18,6 +18,8 @@ snow_global_t global;
 
 bool haveTlsSessions = true;
 
+bool can_send = true;
+
 void http_cb(char *data, size_t len, void *extra) {
     recvcb++;
 
@@ -41,14 +43,11 @@ void http_cb(char *data, size_t len, void *extra) {
         printf("total: %f ms\n", (double) std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count() / 1e+6);
         printf("tls: %f ms\n", (double) tls_compute_total / 1e+6);
 
-        exit(0);
+        //exit(0);
     }
     //cout << *(int*)extra<<"\n";
     //exit(0);
 }
-
-bool can_send = 1;
-
 
 static void loop_cb(struct ev_loop *loop) {
     static int i = 0;
@@ -60,7 +59,7 @@ static void loop_cb(struct ev_loop *loop) {
         }
         start = std::chrono::steady_clock::now();
 
-        can_send = 0;
+        can_send = false;
     }
     
     if (haveTlsSessions) {
