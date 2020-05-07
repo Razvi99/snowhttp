@@ -14,9 +14,9 @@ file(GLOB SOURCES
 
 include_directories(snowhttp "lib/*" "./lib/wolf/wolfssl-4.2.0/")
 
-find_package (Threads)
+#find_package (Threads)
 
 message("SOURCES = ${SOURCES}")
 add_executable(snowhttp main.cpp ${SOURCES})
 
-target_link_libraries(snowhttp /home/razvi/Documents/quant/snowhttp/lib/wolf/libwolfssl.a ${CMAKE_THREAD_LIBS_INIT})
+target_link_libraries(snowhttp /home/toni/CLionProjects/snowhttp/lib/wolf/libwolfssl.a ${CMAKE_THREAD_LIBS_INIT})

@@ -294,9 +294,11 @@ void snow_continueTLSHandshake(snow_connection_t *conn) {
         std::string hostPort = conn->hostname;
         hostPort.append(conn->portPtr);
 
-        auto session = conn->sessions.find(hostPort);
-        if(session == conn->sessions.end()) {
+        //auto session = conn->sessions.find(hostPort);
+        //if(session == conn->sessions.end()) {
+        if (conn->shouldRenewTicket) { //at initialisation, is already set to true
             conn->sessions.insert({hostPort, wolfSSL_get_session(conn->ssl)});
+            conn->shouldRenewTicket = false;
         }
 #endif
     }
@@ -466,7 +468,7 @@ void snow_do(snow_global_t *global, int method, const char *url, void (*write_cb
     snow_connection_t *conn = &global->connections[id];
 
 #ifdef TLS_SESSION_REUSE
-    memset(conn, 0, sizeof(struct snow_connection_t) - sizeof(std::map<std::string, WOLFSSL_SESSION*>));
+    memset(conn, 0, sizeof(struct snow_connection_t) - (sizeof(std::map<std::string, WOLFSSL_SESSION*>) + 1)); //1 for the boolean
 #else
     memset(conn, 0, sizeof(struct snow_connection_t));
 #endif
@@ -501,6 +503,18 @@ void snow_enqueue(snow_global_t *global, int method, const char *url, void (*wri
     snow_do(global, method, url, write_cb, extra, extraHeaders, extraHeaders_size);
 }
 
+void snow_timer_cb_renew_tickets(struct ev_loop *loop, struct ev_timer *w, int revents) {
+    auto *global = (struct snow_global_t *) ((struct ev_timer_snow *) w)->data;
+    snow_connection_t *ptrToConnection;
+
+    for (int i = 0; i < concurrentConnections; ++i) {
+        ptrToConnection = &(global->connections[i]);
+        ptrToConnection->shouldRenewTicket = true;
+    }
+
+    printf("Tickets renewed!\n");
+}
+
 
 void snow_init(snow_global_t *global) {
     wolfSSL_Init();
@@ -527,9 +541,12 @@ void snow_init(snow_global_t *global) {
         global->freeConnections.push(i);
 
 #ifdef QUEUEING_ENABLED
-    global->timer.data = global;
-    ev_timer_init((struct ev_timer *) &global->timer, snow_timer_cb, 0, queueCheckInterval);
-    ev_timer_start(global->loop, (struct ev_timer *) &global->timer);
+    global->mainTimer.data = global;
+    ev_timer_init((struct ev_timer *) &global->mainTimer, snow_timer_cb, 0, queueCheckInterval);
+    ev_timer_start(global->loop, (struct ev_timer *) &global->mainTimer);
+    global->renewTicketsTimer.data = global;
+    ev_timer_init((struct ev_timer *) &global->renewTicketsTimer, snow_timer_cb_renew_tickets, 3600, 3600); //reset the tickets hourly
+    ev_timer_start(global->loop, (struct ev_timer *) &global->renewTicketsTimer);
 #endif
 }
 

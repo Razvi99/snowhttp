@@ -11,7 +11,7 @@
 #include "events.h"
 
 
-constexpr int concurrentConnections = 512;
+constexpr int concurrentConnections = 128;
 constexpr int connUrlSize = 256;
 constexpr int connBufferSize = 1 << 15U;
 constexpr int connSockPriority = 6;
@@ -118,6 +118,7 @@ struct snow_connection_t {
     snow_global_t *global{};
 
 #ifdef TLS_SESSION_REUSE
+    bool shouldRenewTicket = true;
     std::map<std::string, WOLFSSL_SESSION*> sessions;
 #endif
 };
@@ -136,7 +137,8 @@ struct snow_global_t {
 
     WOLFSSL_CTX *wolfCtx = nullptr;
 
-    struct ev_timer_snow timer = {};
+    struct ev_timer_snow mainTimer = {};
+    struct ev_timer_snow renewTicketsTimer = {};
     std::map<std::string, struct addrinfo *> addrCache;
 
     snow_connection_t connections[concurrentConnections];
