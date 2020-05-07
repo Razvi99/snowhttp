@@ -11,7 +11,7 @@
 #include "events.h"
 
 
-constexpr int concurrentConnections = 512;
+constexpr int concurrentConnections = 160;
 constexpr int connUrlSize = 256;
 constexpr int connBufferSize = 1 << 15U;
 constexpr int connSockPriority = 6;
@@ -22,6 +22,8 @@ inline uint64_t tls_compute_total = 0;
 #define DISABLE_NAGLE
 #define QUEUEING_ENABLED
 #define TLS_SESSION_REUSE
+
+#define SNOW_TCP_FASTOPEN
 
 enum method_enum {
     GET, POST, DELETE
@@ -37,8 +39,10 @@ void snow_do(snow_global_t *global, int method, const char *url, void (*write_cb
              const char *extraHeaders = nullptr, size_t extraHeaders_size = 0);
 
 #ifdef QUEUEING_ENABLED
+
 void snow_enqueue(snow_global_t *global, int method, const char *url, void (*write_cb)(char *data, size_t data_len, void *extra), void *extra = nullptr,
-             const char *extraHeaders = nullptr, size_t extraHeaders_size = 0);
+                  const char *extraHeaders = nullptr, size_t extraHeaders_size = 0);
+
 #endif
 
 #ifdef TLS_SESSION_REUSE
@@ -118,14 +122,17 @@ struct snow_connection_t {
     snow_global_t *global{};
 
 #ifdef TLS_SESSION_REUSE
-    std::map<std::string, WOLFSSL_SESSION*> sessions;
+    std::map<std::string, WOLFSSL_SESSION *> sessions;
+    bool dummyTLS = false;
 #endif
 };
 
 struct snow_bareRequest_t {
     int method;
     const char *requestUrl;
+
     void (*write_cb)(char *data, size_t data_len, void *extra);
+
     void *cb_extra;
     const char *extraHeaders;
     size_t extraHeaders_size;

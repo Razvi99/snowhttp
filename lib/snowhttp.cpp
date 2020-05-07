@@ -8,6 +8,91 @@
 #include <netinet/tcp.h>
 #include <chrono>
 
+
+int snow_wolf_recv(WOLFSSL *ssl, char *buff, int sz, void *ctx) {
+    snow_connection_t *conn = (snow_connection_t *)ctx;
+    int sockfd = conn->sockfd;
+    int recvd;
+
+    if ((recvd = recv(sockfd, buff, sz, 0)) == -1) {
+
+        switch (errno) {
+#if EAGAIN != EWOULDBLOCK
+            case EAGAIN:
+#endif
+            case EWOULDBLOCK:
+                if (!wolfSSL_dtls(ssl) || wolfSSL_get_using_nonblock(ssl)) {
+                    return WOLFSSL_CBIO_ERR_WANT_READ;
+                } else {
+                    fprintf(stderr, "socket timeout\n");
+                    return WOLFSSL_CBIO_ERR_TIMEOUT;
+                }
+            case ECONNRESET:
+                fprintf(stderr, "connection reset\n");
+                return WOLFSSL_CBIO_ERR_CONN_RST;
+            case EINTR:
+                fprintf(stderr, "socket interrupted\n");
+                return WOLFSSL_CBIO_ERR_ISR;
+            case ECONNREFUSED:
+                fprintf(stderr, "connection refused\n");
+                return WOLFSSL_CBIO_ERR_WANT_READ;
+            case ECONNABORTED:
+                fprintf(stderr, "connection aborted\n");
+                return WOLFSSL_CBIO_ERR_CONN_CLOSE;
+            default:
+                fprintf(stderr, "general error\n");
+                return WOLFSSL_CBIO_ERR_GENERAL;
+        }
+    } else if (recvd == 0) {
+        printf("Connection closed\n");
+        return WOLFSSL_CBIO_ERR_CONN_CLOSE;
+    }
+    return recvd;
+}
+
+
+int snow_wolf_send(WOLFSSL *ssl, char *buff, int sz, void *ctx) {
+    snow_connection_t *conn = (snow_connection_t *)ctx;
+    int sockfd = conn->sockfd;
+
+    int sent;
+
+#ifdef SNOW_TCP_FASTOPEN
+    if(conn->connectionStatus == CONN_UNREADY) { // tcp fastopen
+        sent = sendto(sockfd, buff, sz, MSG_FASTOPEN, conn->addrinfo->ai_addr, conn->addrinfo->ai_addrlen);
+        conn->connectionStatus = CONN_TLS_HANDSHAKE; // proceed as normal
+    }
+    else sent = send(sockfd, buff, sz, 0);
+#else
+    sent = send(sockfd, buff, sz, 0);
+#endif
+
+    if (sent == -1) {
+
+        switch (errno) {
+#if EAGAIN != EWOULDBLOCK
+            case EAGAIN: /* EAGAIN == EWOULDBLOCK on some systems, but not others */
+#endif
+            case EWOULDBLOCK:
+                return WOLFSSL_CBIO_ERR_WANT_READ;
+            case ECONNRESET:
+                return WOLFSSL_CBIO_ERR_CONN_RST;
+            case EINTR:
+                return WOLFSSL_CBIO_ERR_ISR;
+            case EPIPE:
+                return WOLFSSL_CBIO_ERR_CONN_CLOSE;
+            default:
+                return WOLFSSL_CBIO_ERR_GENERAL;
+        }
+    }
+    else if (sent == 0) {
+        return 0;
+    }
+
+    return sent;
+}
+
+
 bool buff_put(struct buff_static_t *buff, char *data, size_t dataSize) {
     if (buff->head + dataSize > BUFFSIZE)
         return false;
@@ -209,8 +294,8 @@ void snow_resolveHost(snow_connection_t *conn) {
     }
 }
 
-void snow_startTLSHandshake(snow_global_t *global, snow_connection_t *conn) {
-    if ((SNOW_UNLIKELY((conn->ssl = wolfSSL_new(global->wolfCtx)) == nullptr))) {
+void snow_startTLSHandshake(snow_connection_t *conn) {
+    if ((SNOW_UNLIKELY((conn->ssl = wolfSSL_new(conn->global->wolfCtx)) == nullptr))) {
         fprintf(stderr, "ERR: wolfSSL_new error.\n");
         assert(0);
     }
@@ -225,13 +310,19 @@ void snow_startTLSHandshake(snow_global_t *global, snow_connection_t *conn) {
         if (wolfSSL_set_session(conn->ssl, session->second) != SSL_SUCCESS) {
             fprintf(stderr, "ERR: failed to set cached session\n");
         }
-    }
+    } //else fprintf(stderr, "WARN: could not find resumable session\n");
 #endif
 
     wolfSSL_set_fd(conn->ssl, conn->sockfd);
     wolfSSL_set_using_nonblock(conn->ssl, 1);
 
+    // to access conn in read and write
+    wolfSSL_SetIOReadCtx(conn->ssl, conn);
+    wolfSSL_SetIOWriteCtx(conn->ssl, conn);
+
+#ifndef SNOW_TCP_FASTOPEN
     conn->connectionStatus = CONN_TLS_HANDSHAKE; // will be processed in write cb & read cb
+#endif
 }
 
 void snow_terminateConn(snow_connection_t *conn) {
@@ -283,10 +374,14 @@ void snow_continueTLSHandshake(snow_connection_t *conn) {
     if (SNOW_UNLIKELY(ret != SSL_SUCCESS)) {
         char buffer[80];
         int err = wolfSSL_get_error(conn->ssl, ret);
+
+#ifndef SNOW_TCP_FASTOPEN
         if (err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
             fprintf(stderr, "error = %d, %s\n", err, wolfSSL_ERR_error_string(err, buffer));
             assert(0);
         }
+#endif
+
     } else {
         conn->connectionStatus = CONN_READY;
 
@@ -295,7 +390,7 @@ void snow_continueTLSHandshake(snow_connection_t *conn) {
         hostPort.append(conn->portPtr);
 
         auto session = conn->sessions.find(hostPort);
-        if(session == conn->sessions.end()) {
+        if (session == conn->sessions.end()) {
             conn->sessions.insert({hostPort, wolfSSL_get_session(conn->ssl)});
         }
 #endif
@@ -367,7 +462,7 @@ void snow_checkConnected(snow_connection_t *conn) {
     if (conn_r == 0) {
         conn->connectionStatus = CONN_ACK;
         if (conn->secure)
-            snow_startTLSHandshake(conn->global, conn);
+            snow_startTLSHandshake(conn);
         else conn->connectionStatus = CONN_READY;
     }
 }
@@ -397,9 +492,14 @@ void snow_initConnection(snow_connection_t *conn) {
 
     setsockopt(conn->sockfd, SOL_SOCKET, SO_PRIORITY, &connSockPriority, sizeof(int));
 
+#if defined(SNOW_TCP_FASTOPEN)
+    int fastopen = 1;
+    setsockopt(conn->sockfd, IPPROTO_TCP, TCP_FASTOPEN_CONNECT, (char *) &fastopen, sizeof(int));
+#endif
+
 #ifdef DISABLE_NAGLE
-    int flag = 1;
-    setsockopt(conn->sockfd, IPPROTO_TCP, TCP_NODELAY, (char *) &flag, sizeof(int));
+    int nagle = 1;
+    setsockopt(conn->sockfd, IPPROTO_TCP, TCP_NODELAY, (char *) &nagle, sizeof(int));
 #endif
 
     int ret = fcntl(conn->sockfd, F_SETFL, fcntl(conn->sockfd, F_GETFL, 0) | O_NONBLOCK);
@@ -418,16 +518,24 @@ void snow_initConnection(snow_connection_t *conn) {
         assert(0);
     }
 
+#ifndef SNOW_TCP_FASTOPEN // normal connection
     int conn_r = connect(conn->sockfd, conn->addrinfo->ai_addr, conn->addrinfo->ai_addrlen);
+
     conn->connectionStatus = CONN_IN_PROGRESS;
 
     if (SNOW_UNLIKELY(conn_r != 0 && errno != EINPROGRESS)) {
         std::cerr << "Socket connection failed: " << errno << "\n";
         assert(0);
     }
+#endif
 
     ev_io_start(conn->global->loop, (struct ev_io *) &conn->ior);
     ev_io_start(conn->global->loop, (struct ev_io *) &conn->iow);
+
+#ifdef SNOW_TCP_FASTOPEN // fastopen conn
+    snow_startTLSHandshake(conn);
+    snow_continueTLSHandshake(conn);
+#endif
 }
 
 void snow_bufferRequest(snow_connection_t *conn) {
@@ -466,7 +574,7 @@ void snow_do(snow_global_t *global, int method, const char *url, void (*write_cb
     snow_connection_t *conn = &global->connections[id];
 
 #ifdef TLS_SESSION_REUSE
-    memset(conn, 0, sizeof(struct snow_connection_t) - sizeof(std::map<std::string, WOLFSSL_SESSION*>));
+    memset(conn, 0, sizeof(struct snow_connection_t) - sizeof(std::map<std::string, WOLFSSL_SESSION *>));
 #else
     memset(conn, 0, sizeof(struct snow_connection_t));
 #endif
@@ -507,15 +615,24 @@ void snow_init(snow_global_t *global) {
 
     global->wolfCtx = wolfSSL_CTX_new(wolfTLSv1_2_client_method());
 
+    if (global->wolfCtx == nullptr) {
+        fprintf(stderr, "ERR: wolfSSL_CTX_new error.\n");
+        assert(0);
+    }
+
     if (wolfSSL_CTX_UseSessionTicket(global->wolfCtx) != SSL_SUCCESS) {
         fprintf(stderr, "ERR: ticket enable error.\n");
         assert(0);
     }
 
-    if (global->wolfCtx == nullptr) {
-        fprintf(stderr, "ERR: wolfSSL_CTX_new error.\n");
+    if (wolfSSL_CTX_set_session_cache_mode(global->wolfCtx, SSL_SESS_CACHE_NO_AUTO_CLEAR) != SSL_SUCCESS) {
+        fprintf(stderr, "ERR: could not turn session cache flushing off.\n");
         assert(0);
     }
+
+    // set custom functions
+    wolfSSL_SetIORecv(global->wolfCtx, snow_wolf_recv);
+    wolfSSL_SetIOSend(global->wolfCtx, snow_wolf_send);
 
     // Load CA certificates into WOLFSSL_CTX
     if (wolfSSL_CTX_load_verify_locations(global->wolfCtx, "/etc/ssl/certs/ca-certificates.crt", nullptr) != SSL_SUCCESS) {
