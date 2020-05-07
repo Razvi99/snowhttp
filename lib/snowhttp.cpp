@@ -5,54 +5,32 @@
 #include <cassert>
 #include <cerrno>
 #include <climits>
-#include <netinet/tcp.h>
 #include <chrono>
+#include <netinet/tcp.h>
 
-bool buff_put(struct buff_static_t *buff, char *data, size_t dataSize) {
-    if (buff->head + dataSize > BUFFSIZE)
-        return false;
-
-    memcpy(&buff->buff[buff->head], data, dataSize);
-    buff->head += dataSize;
-    return true;
-}
-
-bool buff_pull(struct buff_static_t *buff, void *dest, size_t size) {
-    if (buff->tail + size > BUFFSIZE)
-        return false;
-
-    buff->tail += size;
-    memcpy(dest, &buff->buff[buff->tail], size);
-    return true;
-}
-
-size_t buff_to_pull(struct buff_static_t *buff) {
+size_t snow_buff_to_pull(struct buff_static_t *buff) {
     return buff->head - buff->tail;
 }
 
-bool buff_empty(struct buff_static_t *buff) {
+bool snow_buff_empty(struct buff_static_t *buff) {
     return buff->head == buff->tail;
 }
 
-size_t buff_pull_to_sock(struct buff_static_t *buff, void *f, size_t size, bool ssl) {
-    size_t remain;
+size_t snow_buff_pull_to_sock(struct buff_static_t *buff, void *f, size_t size, bool ssl) {
+    size_t remain = size;
 
-    if (buff->tail + size > BUFFSIZE) {
+    if (buff->tail + size > connBufferSize) {
         std::cerr << "ERR: send buffer too small\n";
         assert(0);
     }
-
-    remain = size;
 
     while (remain > 0) {
         ssize_t ret;
 
         if (ssl) {
             ret = wolfSSL_write((WOLFSSL *) f, &buff->buff[buff->tail], remain);
-
             if (ret == -1) {
                 int err = wolfSSL_get_error((WOLFSSL *) f, ret);
-
                 if (err == WOLFSSL_ERROR_WANT_WRITE)
                     break;
                 else {
@@ -64,35 +42,26 @@ size_t buff_pull_to_sock(struct buff_static_t *buff, void *f, size_t size, bool 
         } else {
             ret = write(*(int *) f, &buff->buff[buff->tail], remain);
             if (ret < 0) {
-                if (errno == EINTR)
-                    continue;
-
-                if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOTCONN)
-                    break;
-
+                if (errno == EINTR) continue;
+                if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOTCONN) break;
                 return -1;
             }
         }
-
         remain -= ret;
         buff->tail += ret;
     }
-
     return remain;
 }
 
-size_t buff_put_from_sock(struct buff_static_t *buff, void *f, int size, bool ssl) {
-
+size_t snow_buff_put_from_sock(struct buff_static_t *buff, void *f, int size, bool ssl) {
     size_t remain, total = 0;
 
-    if (size < 0)
-        size = INT_MAX;
-
+    if (size < 0) size = INT_MAX;
     remain = size;
 
     while (remain) {
         ssize_t ret;
-        size_t head_room = BUFFSIZE - buff->head;
+        size_t head_room = connBufferSize - buff->head;
 
         if (head_room <= 0) {
             std::cerr << "ERR: receive buffer too small\n";
@@ -101,10 +70,8 @@ size_t buff_put_from_sock(struct buff_static_t *buff, void *f, int size, bool ss
 
         if (ssl) {
             ret = wolfSSL_read((WOLFSSL *) f, &buff->buff[buff->head], head_room);
-
             if (ret == -1) {
                 int err = wolfSSL_get_error((WOLFSSL *) f, ret);
-
                 if (err == WOLFSSL_ERROR_WANT_READ)
                     break;
                 else {
@@ -116,32 +83,22 @@ size_t buff_put_from_sock(struct buff_static_t *buff, void *f, int size, bool ss
         } else {
             ret = read(*(int *) f, &buff->buff[buff->head], head_room);
             if (ret < 0) {
-                if (errno == EINTR)
-                    continue;
-
-                if (errno == EAGAIN || errno == ENOTCONN || errno == EWOULDBLOCK)
-                    break;
-
+                if (errno == EINTR) continue;
+                if (errno == EAGAIN || errno == ENOTCONN || errno == EWOULDBLOCK) break;
                 assert(0);
             }
-
         }
-
         if (!ret) {
             int err = wolfSSL_get_error((WOLFSSL *) f, ret);
-
             char buffer[256];
             fprintf(stderr, "sock put error = %d, %s\n", err, wolfSSL_ERR_error_string(err, buffer));
-
             assert(0); // conn closed?
         }
 
         assert(ret > 0);
-
         buff->head += ret;
         remain -= ret;
         total += ret;
-
     }
     return total;
 }
@@ -174,6 +131,10 @@ void snow_parseUrl(snow_connection_t *conn) {
         *it = 0; // set slash to 0
         conn->path = it + 1;
     }
+
+#ifndef SNOW_NO_POST_BODY
+    conn->query = strchr(conn->path, '?');
+#endif
 
     if (conn->port == 0) {
         if (strcmp(conn->protocol, "http") == 0)
@@ -209,22 +170,24 @@ void snow_resolveHost(snow_connection_t *conn) {
     }
 }
 
-void snow_startTLSHandshake(snow_global_t *global, snow_connection_t *conn) {
-    if ((SNOW_UNLIKELY((conn->ssl = wolfSSL_new(global->wolfCtx)) == nullptr))) {
+void snow_startTLSHandshake(snow_connection_t *conn) {
+    if ((SNOW_UNLIKELY((conn->ssl = wolfSSL_new(conn->global->wolfCtx)) == nullptr))) {
         fprintf(stderr, "ERR: wolfSSL_new error.\n");
         assert(0);
     }
 
-#ifdef TLS_SESSION_REUSE
-    std::string hostPort = conn->hostname;
-    hostPort.append(conn->portPtr);
+#ifdef SNOW_TLS_SESSION_REUSE
+    if (conn->method != __TLS_DUMMY) {
+        std::string hostPort = conn->hostname;
+        hostPort.append(conn->portPtr);
 
-    auto session = conn->sessions.find(hostPort);
+        auto session = conn->sessions.find(hostPort);
 
-    if (session != conn->sessions.end()) {
-        if (wolfSSL_set_session(conn->ssl, session->second) != SSL_SUCCESS) {
-            fprintf(stderr, "ERR: failed to set cached session\n");
-        }
+        if (session != conn->sessions.end()) {
+            if (wolfSSL_set_session(conn->ssl, session->second) != SSL_SUCCESS) {
+                fprintf(stderr, "ERR: failed to set cached session\n");
+            }
+        } else fprintf(stderr, "WARN: could not find resumable session\n");
     }
 #endif
 
@@ -238,7 +201,7 @@ void snow_terminateConn(snow_connection_t *conn) {
     conn->connectionStatus = CONN_DONE;
     if (conn->write_cb) conn->write_cb(conn->content, conn->contentLen, conn->extra_cb);
 
-    setsockopt(conn->sockfd, SOL_SOCKET, SO_LINGER, &conn->global->sock_linger0, sizeof(struct linger));
+    setsockopt(conn->sockfd, SOL_SOCKET, SO_LINGER, &sock_linger0, sizeof(struct linger));
     close(conn->sockfd);
 
     if (conn->secure) wolfSSL_free(conn->ssl);
@@ -290,15 +253,26 @@ void snow_continueTLSHandshake(snow_connection_t *conn) {
     } else {
         conn->connectionStatus = CONN_READY;
 
-#ifdef TLS_SESSION_REUSE
-        std::string hostPort = conn->hostname;
-        hostPort.append(conn->portPtr);
+#ifdef SNOW_TLS_SESSION_REUSE
+        if (conn->method == __TLS_DUMMY) {
+            std::string hostPort = conn->hostname;
+            hostPort.append(conn->portPtr);
 
-        //auto session = conn->sessions.find(hostPort);
-        //if(session == conn->sessions.end()) {
-        if (conn->shouldRenewTicket) { //at initialisation, is already set to true
-            conn->sessions.insert({hostPort, wolfSSL_get_session(conn->ssl)});
-            conn->shouldRenewTicket = false;
+            auto session = conn->sessions.find(hostPort);
+
+            if (session != conn->sessions.end()) { // remove and free old session
+                wolfSSL_SESSION_free(session->second);
+                conn->sessions.erase(hostPort);
+            }
+
+            conn->sessions.insert({hostPort, wolfSSL_get_session(conn->ssl)}); // insert new session
+            conn->connectionStatus = CONN_DONE;
+
+            ev_io_stop(conn->global->loop, (struct ev_io *) &conn->ior);
+            ev_io_stop(conn->global->loop, (struct ev_io *) &conn->iow);
+            snow_terminateConn(conn);
+
+            conn->global->waitForSessions++;
         }
 #endif
     }
@@ -307,28 +281,30 @@ void snow_continueTLSHandshake(snow_connection_t *conn) {
 void snow_processFirstResponse(snow_connection_t *conn) {
     conn->connectionStatus = CONN_RECEIVING;
 
-    char *chunked = strstr(&conn->readBuff.buff[conn->readBuff.tail], "Transfer-Encoding: chunked\r\n");
-
+    char *chunked = strstr(&conn->readBuff.buff[conn->readBuff.tail], "\r\nTransfer-Encoding: chunked\r\n");
     if (chunked) conn->chunked = true;
 
-    char *p = strstr(&conn->readBuff.buff[conn->readBuff.tail], "\r\n\r\n");
+    char *pLen = strstr(&conn->readBuff.buff[conn->readBuff.tail], "\r\nContent-Length: ");
+    if (pLen) conn->expectedContentLen = atoi(pLen + 18);
 
-    if (SNOW_UNLIKELY(p == nullptr)) {
+    char *pEnd = strstr(&conn->readBuff.buff[conn->readBuff.tail], "\r\n\r\n");
+
+    if (SNOW_UNLIKELY(pEnd == nullptr)) {
         std::cerr << "ERR: could not find the end of headers\n";
         assert(0);
     }
 
-    p += 4; // skip over \r\n\r\n
+    pEnd += 4; // skip over \r\n\r\n
 
-    conn->readBuff.tail = p - conn->readBuff.buff;
-    conn->content = p;
+    conn->readBuff.tail = pEnd - conn->readBuff.buff;
+    conn->content = pEnd;
 }
 
 static void snow_io_read_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
     auto *conn = (struct snow_connection_t *) ((struct ev_io_snow *) w)->data;
 
     if (SNOW_LIKELY(conn->connectionStatus == CONN_WAITING || conn->connectionStatus == CONN_RECEIVING)) {
-        size_t readSize = buff_put_from_sock(&conn->readBuff, conn->secure ? (void *) conn->ssl : (void *) &conn->sockfd, -1, conn->secure);
+        size_t readSize = snow_buff_put_from_sock(&conn->readBuff, conn->secure ? (void *) conn->ssl : (void *) &conn->sockfd, -1, conn->secure);
 
         if (!readSize) return; // no read
 
@@ -342,24 +318,35 @@ static void snow_io_read_cb(struct ev_loop *loop, struct ev_io *w, int revents) 
                 snow_terminateConn(conn);
                 ev_io_stop(loop, (struct ev_io *) &conn->ior);
             }
-        } else if (strcmp(&conn->readBuff.buff[conn->readBuff.head - 1], "\n") == 0) {
-            snow_terminateConn(conn);
-            ev_io_stop(loop, (struct ev_io *) &conn->ior);
+        } else {
+            if (conn->expectedContentLen) { // header Content-Length was present
+                std::cerr << &conn->readBuff.buff[conn->readBuff.head] - conn->content << " - " << conn->expectedContentLen << "\n";
+
+                if (&conn->readBuff.buff[conn->readBuff.head] - conn->content >= conn->expectedContentLen) {
+                    conn->contentLen = conn->expectedContentLen;
+                    snow_terminateConn(conn);
+                    ev_io_stop(loop, (struct ev_io *) &conn->ior);
+                }
+            } else if (strcmp(&conn->readBuff.buff[conn->readBuff.head - 1], "\n") == 0) {
+                conn->contentLen = &conn->readBuff.buff[conn->readBuff.head] - conn->content;
+                snow_terminateConn(conn);
+                ev_io_stop(loop, (struct ev_io *) &conn->ior);
+            }
         }
 
     } else if (conn->connectionStatus == CONN_TLS_HANDSHAKE) {
         snow_continueTLSHandshake(conn);
     } else if (conn->connectionStatus == CONN_DONE) {
         ev_io_stop(loop, (struct ev_io *) &conn->ior);
+        printf("done");
     }
 }
 
 int snow_sendRequest(snow_connection_t *conn) {
-    int rem = buff_pull_to_sock(&conn->writeBuff, conn->secure ? (void *) conn->ssl : (void *) &conn->sockfd, buff_to_pull(&conn->writeBuff),
-                                conn->secure);
+    int rem = snow_buff_pull_to_sock(&conn->writeBuff, conn->secure ? (void *) conn->ssl : (void *) &conn->sockfd,
+                                     snow_buff_to_pull(&conn->writeBuff), conn->secure);
 
-    if (rem == 0)
-        conn->connectionStatus = CONN_WAITING;
+    if (rem == 0) conn->connectionStatus = CONN_WAITING;
 
     return rem;
 }
@@ -369,7 +356,7 @@ void snow_checkConnected(snow_connection_t *conn) {
     if (conn_r == 0) {
         conn->connectionStatus = CONN_ACK;
         if (conn->secure)
-            snow_startTLSHandshake(conn->global, conn);
+            snow_startTLSHandshake(conn);
         else conn->connectionStatus = CONN_READY;
     }
 }
@@ -377,7 +364,7 @@ void snow_checkConnected(snow_connection_t *conn) {
 static void snow_io_write_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
     auto *conn = (struct snow_connection_t *) ((struct ev_io_snow *) w)->data;
 
-    if (conn->connectionStatus == CONN_READY && !buff_empty(&conn->writeBuff)) {
+    if (conn->connectionStatus == CONN_READY && !snow_buff_empty(&conn->writeBuff)) {
         if (snow_sendRequest(conn) == 0)
             ev_io_stop(loop, (struct ev_io *) &conn->iow);
     }
@@ -399,9 +386,9 @@ void snow_initConnection(snow_connection_t *conn) {
 
     setsockopt(conn->sockfd, SOL_SOCKET, SO_PRIORITY, &connSockPriority, sizeof(int));
 
-#ifdef DISABLE_NAGLE
-    int flag = 1;
-    setsockopt(conn->sockfd, IPPROTO_TCP, TCP_NODELAY, (char *) &flag, sizeof(int));
+#ifdef SNOW_DISABLE_NAGLE
+    int nagle = 1;
+    setsockopt(conn->sockfd, IPPROTO_TCP, TCP_NODELAY, (char *) &nagle, sizeof(int));
 #endif
 
     int ret = fcntl(conn->sockfd, F_SETFL, fcntl(conn->sockfd, F_GETFL, 0) | O_NONBLOCK);
@@ -433,9 +420,29 @@ void snow_initConnection(snow_connection_t *conn) {
 }
 
 void snow_bufferRequest(snow_connection_t *conn) {
+    int size = 0;
 
-    int size = sprintf(conn->writeBuff.buff, "%s /%s HTTP/1.1\r\nHost: %s\r\nAccept: */*\r\n%.*s\r\n",
+#ifndef SNOW_NO_POST_BODY
+    if (conn->method == POST && conn->query) {
+        *conn->query = 0; // terminate path at ?
+        size = sprintf(conn->writeBuff.buff,
+                       "%s /%s HTTP/1.1\r\n"
+                       "Host: %s\r\n"
+                       "Content-Type: application/x-www-form-urlencoded\r\n"
+                       "Content-len: %zu\r\n"
+                       "%.*s\r\n"
+                       "%s",
+                       method_strings[conn->method], conn->path, conn->hostname, strlen(conn->query + 1),
+                       (int) conn->extraHeaders_size, conn->extraHeaders, conn->query + 1);
+        printf("%s", conn->writeBuff.buff);
+    } else
+#endif
+    {
+        size = sprintf(conn->writeBuff.buff, "%s /%s HTTP/1.1\r\n"
+                                             "Host: %s\r\n"
+                                             "%.*s\r\n",
                        method_strings[conn->method], conn->path, conn->hostname, (int) conn->extraHeaders_size, conn->extraHeaders);
+    }
 
     conn->writeBuff.head += size;
 }
@@ -450,6 +457,22 @@ void snow_timer_cb(struct ev_loop *loop, struct ev_timer *w, int revents) {
         snow_do(global, req.method, req.requestUrl, req.write_cb, req.cb_extra, req.extraHeaders, req.extraHeaders_size);
     }
 }
+
+#ifdef SNOW_TLS_SESSION_REUSE
+
+void snow_timer_renew_cb(struct ev_loop *loop, struct ev_timer *w, int revents) {
+    auto *global = (struct snow_global_t *) ((struct ev_timer_snow *) w)->data;
+
+    for (const std::string &url : global->wantedSessions) {
+        for (int i = 0; i < concurrentConnections; ++i) {
+            snow_enqueue(global, __TLS_DUMMY, url.c_str(), nullptr, nullptr, nullptr, 0);
+        }
+    }
+
+    printf("INFO: renewing sessions\n");
+}
+
+#endif
 
 ///// PUBLIC
 
@@ -467,8 +490,8 @@ void snow_do(snow_global_t *global, int method, const char *url, void (*write_cb
 
     snow_connection_t *conn = &global->connections[id];
 
-#ifdef TLS_SESSION_REUSE
-    memset(conn, 0, sizeof(struct snow_connection_t) - (sizeof(std::map<std::string, WOLFSSL_SESSION*>) + 1)); //1 for the boolean
+#ifdef SNOW_TLS_SESSION_REUSE
+    memset(conn, 0, sizeof(struct snow_connection_t) - (sizeof(std::map<std::string, WOLFSSL_SESSION *>)));
 #else
     memset(conn, 0, sizeof(struct snow_connection_t));
 #endif
@@ -489,7 +512,8 @@ void snow_do(snow_global_t *global, int method, const char *url, void (*write_cb
     snow_parseUrl(conn);
     snow_resolveHost(conn);
     snow_initConnection(conn);
-    snow_bufferRequest(conn);
+
+    if (conn->method != __TLS_DUMMY) snow_bufferRequest(conn);
 }
 
 void snow_enqueue(snow_global_t *global, int method, const char *url, void (*write_cb)(char *data, size_t data_len, void *extra),
@@ -503,31 +527,31 @@ void snow_enqueue(snow_global_t *global, int method, const char *url, void (*wri
     snow_do(global, method, url, write_cb, extra, extraHeaders, extraHeaders_size);
 }
 
-void snow_timer_cb_renew_tickets(struct ev_loop *loop, struct ev_timer *w, int revents) {
-    auto *global = (struct snow_global_t *) ((struct ev_timer_snow *) w)->data;
-    snow_connection_t *ptrToConnection;
+#ifdef SNOW_TLS_SESSION_REUSE
 
-    for (int i = 0; i < concurrentConnections; ++i) {
-        ptrToConnection = &(global->connections[i]);
-        ptrToConnection->shouldRenewTicket = true;
-    }
-
-    printf("Tickets renewed!\n");
+void snow_addWantedSession(snow_global_t *global, const std::string &url) {
+    global->wantedSessions.push_back(url);
 }
 
+#endif
 
 void snow_init(snow_global_t *global) {
     wolfSSL_Init();
 
     global->wolfCtx = wolfSSL_CTX_new(wolfTLSv1_2_client_method());
 
+    if (global->wolfCtx == nullptr) {
+        fprintf(stderr, "ERR: wolfSSL_CTX_new error.\n");
+        assert(0);
+    }
+
     if (wolfSSL_CTX_UseSessionTicket(global->wolfCtx) != SSL_SUCCESS) {
         fprintf(stderr, "ERR: ticket enable error.\n");
         assert(0);
     }
 
-    if (global->wolfCtx == nullptr) {
-        fprintf(stderr, "ERR: wolfSSL_CTX_new error.\n");
+    if (wolfSSL_CTX_set_session_cache_mode(global->wolfCtx, SSL_SESS_CACHE_NO_AUTO_CLEAR) != SSL_SUCCESS) {
+        fprintf(stderr, "ERR: could not turn session cache flushing off.\n");
         assert(0);
     }
 
@@ -540,13 +564,16 @@ void snow_init(snow_global_t *global) {
     for (int i = 0; i < concurrentConnections; i++)
         global->freeConnections.push(i);
 
-#ifdef QUEUEING_ENABLED
+#ifdef SNOW_QUEUEING_ENABLED
     global->mainTimer.data = global;
     ev_timer_init((struct ev_timer *) &global->mainTimer, snow_timer_cb, 0, queueCheckInterval);
     ev_timer_start(global->loop, (struct ev_timer *) &global->mainTimer);
-    global->renewTicketsTimer.data = global;
-    ev_timer_init((struct ev_timer *) &global->renewTicketsTimer, snow_timer_cb_renew_tickets, 3600, 3600); //reset the tickets hourly
-    ev_timer_start(global->loop, (struct ev_timer *) &global->renewTicketsTimer);
+#endif
+
+#ifdef SNOW_TLS_SESSION_REUSE
+    global->sessionRenewTimer.data = global;
+    ev_timer_init((struct ev_timer *) &global->sessionRenewTimer, snow_timer_renew_cb, 0, sessionRenewInterval); // reset the sessions hourly
+    ev_timer_start(global->loop, (struct ev_timer *) &global->sessionRenewTimer);
 #endif
 }
 

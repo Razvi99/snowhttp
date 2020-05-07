@@ -17,6 +17,6 @@ include_directories(snowhttp "lib/*" "./lib/wolf/wolfssl-4.2.0/")
 #find_package (Threads)
 
 message("SOURCES = ${SOURCES}")
-add_executable(snowhttp main.cpp ${SOURCES})
+add_executable(snowhttp main.cpp ${SOURCES} lib/atomic.h)
 
-target_link_libraries(snowhttp /home/toni/CLionProjects/snowhttp/lib/wolf/libwolfssl.a ${CMAKE_THREAD_LIBS_INIT})
+target_link_libraries(snowhttp ${PROJECT_SOURCE_DIR}/lib/wolf/libwolfssl.a ${CMAKE_THREAD_LIBS_INIT})
