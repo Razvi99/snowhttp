@@ -1,7 +1,6 @@
 #include <iostream>
 #include <cstring>
 #include <chrono>
-#include <thread>
 #include <cassert>
 
 #include "lib/snowhttp.h"
@@ -11,7 +10,7 @@ using namespace std;
 auto start = std::chrono::steady_clock::now();
 
 std::atomic<int> recvcb = 0;
-constexpr int req_test_n = concurrentConnections;
+constexpr int req_test_n = 100;
 
 /////////
 snow_global_t global = {};
@@ -21,11 +20,8 @@ ev_loop loops[multi_loop_max];
 void http_cb(char *data, size_t len, void *extra) {
     recvcb++;
 
-    //setbuf(stdout, NULL);
     //printf("finished %lu\n", (uint64_t) extra);
-    //printf("%d", (long) extra);
     //printf("%.*s\n", len, data);
-    //fprintf(stderr, "%s", data);
 
     if (recvcb == req_test_n) {
 
@@ -38,26 +34,10 @@ void http_cb(char *data, size_t len, void *extra) {
     }
 }
 
-static void loop_cb(struct ev_loop *loop) {
-    /*
-    static unsigned int i = 0;
-    static bool sent = 0;
-
-    if (global.waitForSessions >= concurrentConnections && !sent) {
-        //if(!sent){
-        sent = 1;
-
-        for (uint64_t id = 0; id < req_test_n; id++) {
-            char url[256] = "https://api.binance.com/api/v3/time";
-            snow_enqueue(&global, GET, url, http_cb, (void *) id);
-        }
-        start = std::chrono::steady_clock::now();
-        tls_compute_total = 0;
-    }
-
-    i++;*/
+void err_cb(int err, void *extra) {
+    fprintf(stderr, "conn %lu, error: %d\n", (uint64_t) extra, err);
+    recvcb++;
 }
-
 
 void assignLoops(snow_global_t *g) {
     for (int i = 0; i < multi_loop_n_runtime; i++) {
@@ -82,7 +62,7 @@ int main(int argc, char **argv) {
 
     for (uint64_t id = 0; id < req_test_n; id++) {
         char url[256] = "https://api.binance.com/api/v3/ping";
-        snow_enqueue(&global, GET, url, http_cb, (void *) id);
+        snow_enqueue(&global, GET, url, http_cb, err_cb, (void *) id);
     }
     start = std::chrono::steady_clock::now();
 

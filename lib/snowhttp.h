@@ -13,11 +13,13 @@
 
 #include "events.h"
 
-constexpr int concurrentConnections = 10;
+constexpr int concurrentConnections = 256;
 constexpr int connUrlSize = 256;
 constexpr int connBufferSize = 1 << 15U;
 constexpr int connSockPriority = 6;
-constexpr double queueCheckInterval = 0.001; // 1ms
+constexpr int connSockTimeout = 2000; // in ms
+
+constexpr double mainTimerInterval = 0.001; // 1ms - coincides with queue checking
 constexpr double sessionRenewInterval = 3600; // 1hr
 
 constexpr int multi_loop_max = 16;
@@ -33,19 +35,26 @@ enum method_enum {
     GET, POST, DELETE
 };
 
+enum error_enum {
+    HOSTNAME_RESOLVE, WOLFSSL_NEW, CHUNKED_DATA_PARSING, WOLFSSL_CONNECT, HEADER_PARSING, SOCK_CREATION, SOCK_CONNECTION,
+    SOCK_WRITE_ERR, SOCK_READ_ERR, SOCK_READ_CLOSED, URL_MALFORMATTED, BUFF_WRITE_SMALL, BUFF_READ_SMALL, CONN_TIMEOUT, NO_FREE_CONN
+};
+
 struct snow_global_t;
 
 void snow_init(snow_global_t *global);
 
 void snow_destroy(snow_global_t *global);
 
-void snow_do(snow_global_t *global, int method, const char *url, void (*write_cb)(char *data, size_t data_len, void *extra), void *extra = nullptr,
-             const char *extraHeaders = nullptr, size_t extraHeaders_size = 0);
+void snow_do(snow_global_t *global, int method, const char *url, void (*write_cb)(char *data, size_t data_len, void *extra),
+             void (*err_cb)(int err, void *extra),
+             void *extra = nullptr, const char *extraHeaders = nullptr, size_t extraHeaders_size = 0);
 
 #ifdef SNOW_QUEUEING_ENABLED
 
-void snow_enqueue(snow_global_t *global, int method, const char *url, void (*write_cb)(char *data, size_t data_len, void *extra), void *extra = nullptr,
-                  const char *extraHeaders = nullptr, size_t extraHeaders_size = 0);
+void snow_enqueue(snow_global_t *global, int method, const char *url, void (*write_cb)(char *data, size_t data_len, void *extra),
+                  void (*err_cb)(int err, void *extra),
+                  void *extra = nullptr, const char *extraHeaders = nullptr, size_t extraHeaders_size = 0);
 
 #endif
 
@@ -56,8 +65,11 @@ void snow_addWantedSession(snow_global_t *global, const std::string &url);
 #endif
 
 #ifdef SNOW_MULTI_LOOP
+
 void snow_spawnLoops(snow_global_t *global);
+
 void snow_joinLoops(snow_global_t *global);
+
 #endif
 
 /////////////////////////////////////////////////////
@@ -70,13 +82,13 @@ constexpr int __TLS_DUMMY = -1;
 const char method_strings[3][10] = {"GET", "POST", "DELETE"};
 
 enum conn_status_enum {
-    CONN_UNREADY, // before connect()
-    CONN_IN_PROGRESS, // connect() waiting for ACK
+    CONN_UNREADY, // before socket()
+    CONN_IN_PROGRESS, // before conect()
     CONN_ACK, // connect() received ACK
     CONN_TLS_HANDSHAKE, // wolfssl tls started
     CONN_READY, // ready to send http request
-    CONN_WAITING,
-    CONN_RECEIVING,
+    CONN_WAITING, // waiting for first response
+    CONN_RECEIVING, // received first response, potentially waiting for more
     CONN_DONE // received http response
 };
 
@@ -119,6 +131,7 @@ struct snow_connection_t {
 
     int sockfd = 0;
     int connectionStatus = 0;
+    uint64_t creationTime;
 
     WOLFSSL *ssl = nullptr;
 
@@ -136,6 +149,8 @@ struct snow_connection_t {
 
     void (*write_cb)(char *data, size_t data_len, void *extra) = nullptr;
 
+    void (*err_cb)(int err, void *extra) = nullptr;
+
     snow_global_t *global = nullptr;
 
 #ifdef SNOW_TLS_SESSION_REUSE
@@ -147,9 +162,12 @@ struct snow_bareRequest_t {
     int method;
     const char *requestUrl;
 
+    void *extra_cb;
+
     void (*write_cb)(char *data, size_t data_len, void *extra);
 
-    void *cb_extra;
+    void (*err_cb)(int err, void *extra);
+
     const char *extraHeaders;
     size_t extraHeaders_size;
 };
