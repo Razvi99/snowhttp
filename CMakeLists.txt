@@ -4,7 +4,7 @@ project(snowhttp)
 set(CMAKE_CXX_STANDARD 17)
 
 set(CMAKE_CXX_FLAGS_RELEASE "-O3")
-#set(CMAKE_CXX_FLAGS "-lpthread")
+set(CMAKE_CXX_FLAGS "-lpthread")
 
 file(GLOB SOURCES
         include ./lib/*.h
@@ -14,7 +14,7 @@ file(GLOB SOURCES
 
 include_directories(snowhttp "lib/*" "./lib/wolf/wolfssl-4.2.0/")
 
-#find_package (Threads)
+find_package (Threads)
 
 message("SOURCES = ${SOURCES}")
 add_executable(snowhttp main.cpp ${SOURCES} lib/atomic.h)

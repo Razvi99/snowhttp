@@ -150,7 +150,7 @@ void snow_resolveHost(snow_connection_t *conn) {
     std::string hostPort = conn->hostname;
     hostPort.append(conn->portPtr);
 
-    auto it = conn->global->addrCache.find(hostPort);
+    auto it = conn->global->addrCache.find(hostPort); // atomic if multi loop
 
     if (it != conn->global->addrCache.end()) {
         conn->addrinfo = it->second;
@@ -166,7 +166,7 @@ void snow_resolveHost(snow_connection_t *conn) {
             assert(0);
         }
 
-        conn->global->addrCache.insert({hostPort, conn->addrinfo});
+        conn->global->addrCache.insert({hostPort, conn->addrinfo});  // atomic if multi loop
     }
 }
 
@@ -198,7 +198,6 @@ void snow_startTLSHandshake(snow_connection_t *conn) {
 }
 
 void snow_terminateConn(snow_connection_t *conn) {
-    conn->connectionStatus = CONN_DONE;
     if (conn->write_cb) conn->write_cb(conn->content, conn->contentLen, conn->extra_cb);
 
     setsockopt(conn->sockfd, SOL_SOCKET, SO_LINGER, &sock_linger0, sizeof(struct linger));
@@ -206,7 +205,8 @@ void snow_terminateConn(snow_connection_t *conn) {
 
     if (conn->secure) wolfSSL_free(conn->ssl);
 
-    conn->global->freeConnections.push(conn->id);
+    conn->connectionStatus = CONN_DONE;
+    conn->global->freeConnections.push(conn->id);  // atomic if multi loop
 }
 
 void snow_parseChunks(snow_connection_t *conn) {
@@ -236,12 +236,7 @@ void snow_parseChunks(snow_connection_t *conn) {
 }
 
 void snow_continueTLSHandshake(snow_connection_t *conn) {
-    auto start = std::chrono::steady_clock::now();
-
     int ret = wolfSSL_connect(conn->ssl);
-
-    auto end = std::chrono::steady_clock::now();
-    tls_compute_total += std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
 
     if (SNOW_UNLIKELY(ret != SSL_SUCCESS)) {
         char buffer[80];
@@ -266,13 +261,10 @@ void snow_continueTLSHandshake(snow_connection_t *conn) {
             }
 
             conn->sessions.insert({hostPort, wolfSSL_get_session(conn->ssl)}); // insert new session
-            conn->connectionStatus = CONN_DONE;
 
-            ev_io_stop(conn->global->loop, (struct ev_io *) &conn->ior);
-            ev_io_stop(conn->global->loop, (struct ev_io *) &conn->iow);
+            ev_io_stop(conn->loop, (struct ev_io *) &conn->ior);
+            ev_io_stop(conn->loop, (struct ev_io *) &conn->iow);
             snow_terminateConn(conn);
-
-            conn->global->waitForSessions++;
         }
 #endif
     }
@@ -303,7 +295,11 @@ void snow_processFirstResponse(snow_connection_t *conn) {
 static void snow_io_read_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
     auto *conn = (struct snow_connection_t *) ((struct ev_io_snow *) w)->data;
 
-    if (SNOW_LIKELY(conn->connectionStatus == CONN_WAITING || conn->connectionStatus == CONN_RECEIVING)) {
+    if (conn->connectionStatus == CONN_TLS_HANDSHAKE) {
+        snow_continueTLSHandshake(conn);
+    }
+
+    if (conn->connectionStatus == CONN_WAITING || conn->connectionStatus == CONN_RECEIVING) {
         size_t readSize = snow_buff_put_from_sock(&conn->readBuff, conn->secure ? (void *) conn->ssl : (void *) &conn->sockfd, -1, conn->secure);
 
         if (!readSize) return; // no read
@@ -320,8 +316,6 @@ static void snow_io_read_cb(struct ev_loop *loop, struct ev_io *w, int revents) 
             }
         } else {
             if (conn->expectedContentLen) { // header Content-Length was present
-                std::cerr << &conn->readBuff.buff[conn->readBuff.head] - conn->content << " - " << conn->expectedContentLen << "\n";
-
                 if (&conn->readBuff.buff[conn->readBuff.head] - conn->content >= conn->expectedContentLen) {
                     conn->contentLen = conn->expectedContentLen;
                     snow_terminateConn(conn);
@@ -334,11 +328,6 @@ static void snow_io_read_cb(struct ev_loop *loop, struct ev_io *w, int revents) 
             }
         }
 
-    } else if (conn->connectionStatus == CONN_TLS_HANDSHAKE) {
-        snow_continueTLSHandshake(conn);
-    } else if (conn->connectionStatus == CONN_DONE) {
-        ev_io_stop(loop, (struct ev_io *) &conn->ior);
-        printf("done");
     }
 }
 
@@ -364,11 +353,6 @@ void snow_checkConnected(snow_connection_t *conn) {
 static void snow_io_write_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
     auto *conn = (struct snow_connection_t *) ((struct ev_io_snow *) w)->data;
 
-    if (conn->connectionStatus == CONN_READY && !snow_buff_empty(&conn->writeBuff)) {
-        if (snow_sendRequest(conn) == 0)
-            ev_io_stop(loop, (struct ev_io *) &conn->iow);
-    }
-
     if (conn->connectionStatus == CONN_IN_PROGRESS) {
         snow_checkConnected(conn);
     }
@@ -377,6 +361,10 @@ static void snow_io_write_cb(struct ev_loop *loop, struct ev_io *w, int revents)
         snow_continueTLSHandshake(conn);
     }
 
+    if (conn->connectionStatus == CONN_READY && !snow_buff_empty(&conn->writeBuff)) {
+        if (snow_sendRequest(conn) == 0)
+            ev_io_stop(loop, (struct ev_io *) &conn->iow);
+    }
 }
 
 void snow_initConnection(snow_connection_t *conn) {
@@ -415,8 +403,8 @@ void snow_initConnection(snow_connection_t *conn) {
         assert(0);
     }
 
-    ev_io_start(conn->global->loop, (struct ev_io *) &conn->ior);
-    ev_io_start(conn->global->loop, (struct ev_io *) &conn->iow);
+    ev_io_start(conn->loop, (struct ev_io *) &conn->ior);
+    ev_io_start(conn->loop, (struct ev_io *) &conn->iow);
 }
 
 void snow_bufferRequest(snow_connection_t *conn) {
@@ -498,6 +486,13 @@ void snow_do(snow_global_t *global, int method, const char *url, void (*write_cb
 
     conn->id = id;
 
+#ifdef SNOW_MULTI_LOOP
+    conn->loop = global->loops[global->rr_loop];
+    global->rr_loop = (global->rr_loop + 1) % multi_loop_n_runtime;
+#else
+    conn->loop = global->loop;
+#endif
+
     conn->global = global;
 
     strcpy(conn->requestUrl, url);
@@ -535,6 +530,20 @@ void snow_addWantedSession(snow_global_t *global, const std::string &url) {
 
 #endif
 
+#ifdef SNOW_MULTI_LOOP
+
+void snow_spawnLoops(snow_global_t *global) {
+    for (int id = 0; id < multi_loop_n_runtime; id++)
+        global->threads[id] = std::thread([](ev_loop *loop) { ev_run(loop, nullptr); }, global->loops[id]);
+}
+
+void snow_joinLoops(snow_global_t *global) {
+    for (int id = 0; id < multi_loop_n_runtime; id++)
+        global->threads[id].join();
+}
+
+#endif
+
 void snow_init(snow_global_t *global) {
     wolfSSL_Init();
 
@@ -562,7 +571,11 @@ void snow_init(snow_global_t *global) {
     }
 
     for (int i = 0; i < concurrentConnections; i++)
-        global->freeConnections.push(i);
+        global->freeConnections.push(i);  // atomic if multi loop
+
+#ifdef SNOW_MULTI_LOOP
+    global->loop = global->loops[0];
+#endif
 
 #ifdef SNOW_QUEUEING_ENABLED
     global->mainTimer.data = global;

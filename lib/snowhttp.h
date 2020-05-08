@@ -3,6 +3,9 @@
 #include <map>
 #include <queue>
 #include <stack>
+#include <atomic>
+#include <thread>
+#include "atomic.h"
 
 #include "wolfssl/options.h"
 #include "wolfssl/wolfcrypt/settings.h"
@@ -17,15 +20,14 @@ constexpr int connSockPriority = 6;
 constexpr double queueCheckInterval = 0.001; // 1ms
 constexpr double sessionRenewInterval = 3600; // 1hr
 
-constexpr int loopN = 2;
-
-inline uint64_t tls_compute_total = 0;
+constexpr int multi_loop_max = 16;
+inline int multi_loop_n_runtime = 8;
 
 #define SNOW_DISABLE_NAGLE
 #define SNOW_QUEUEING_ENABLED
 #define SNOW_TLS_SESSION_REUSE
 #define SNOW_NO_POST_BODY
-//#define SNOW_MULTI_LOOP
+#define SNOW_MULTI_LOOP
 
 enum method_enum {
     GET, POST, DELETE
@@ -51,6 +53,11 @@ void snow_enqueue(snow_global_t *global, int method, const char *url, void (*wri
 
 void snow_addWantedSession(snow_global_t *global, const std::string &url);
 
+#endif
+
+#ifdef SNOW_MULTI_LOOP
+void snow_spawnLoops(snow_global_t *global);
+void snow_joinLoops(snow_global_t *global);
 #endif
 
 /////////////////////////////////////////////////////
@@ -93,6 +100,8 @@ constexpr struct linger sock_linger0 = {1, 0};
 
 struct snow_connection_t {
     int id;
+
+    ev_loop *loop;
 
     char requestUrl[connUrlSize] = {};
     char *protocol = nullptr, *hostname = nullptr, *path = nullptr, *query = nullptr;
@@ -151,9 +160,13 @@ struct snow_global_t {
     std::map<std::string, struct addrinfo *> addrCache;
     std::queue<int, std::deque<int>> freeConnections;
 #else
-    ev_loop *loops[loopN];
-    std::map<std::string, struct addrinfo *> addrCache;
-    std::queue<int, std::deque<int>> freeConnections;
+    int rr_loop = 0;
+    std::thread threads[multi_loop_max];
+    ev_loop *loops[multi_loop_max];
+    ev_loop *loop = nullptr;
+
+    atomic::map<std::string, struct addrinfo *> addrCache;
+    atomic::queue<int, std::deque<int>> freeConnections;
 #endif
 
     WOLFSSL_CTX *wolfCtx = nullptr;
@@ -165,12 +178,6 @@ struct snow_global_t {
     std::queue<struct snow_bareRequest_t, std::deque<struct snow_bareRequest_t>> requestQueue;
 
 #ifdef SNOW_TLS_SESSION_REUSE
-#ifndef SNOW_MULTI_LOOP
-    uint64_t waitForSessions = 0;
-#else
-    std::atomic<uint64_t> waitForSessions = 0;
-#endif
-
     std::vector<std::string> wantedSessions;
 #endif
 };
