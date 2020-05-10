@@ -1,3 +1,27 @@
+/*
+MIT License
+
+Copyright (c) 2020 Razvan Dan David
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+
 #pragma once
 
 #include <map>
@@ -13,17 +37,17 @@
 
 #include "events.h"
 
-constexpr int concurrentConnections = 256;
-constexpr int connUrlSize = 256;
-constexpr int connBufferSize = 1 << 15U;
-constexpr int connSockPriority = 6;
-constexpr int connSockTimeout = 2000; // in ms
+constexpr int concurrentConnections = 256; // maximum concurrent connections
+constexpr int connUrlSize = 512; // maximum request url size
+constexpr int connBufferSize = 1 << 15U; // read & write buffer sizes
+constexpr int connSockPriority = 6; // socket priority
+constexpr int connSockTimeout = 2000; // socket timeout in ms
 
-constexpr double mainTimerInterval = 0.001; // 1ms - coincides with queue checking
-constexpr double sessionRenewInterval = 3600; // 1hr
+constexpr double mainTimerInterval = 0.001; // 1ms - queue checking - timeot checking
+constexpr double sessionRenewInterval = 3600; // 1hr - cached session renewal timer
 
-constexpr int multi_loop_max = 16;
-inline int multi_loop_n_runtime = 8;
+constexpr int multi_loop_max = 16; // needed for static allocation, needs to be > multi_loop_n_runtime
+inline int multi_loop_n_runtime = 8; // actual thead number - must be < multi_loop_max
 
 #define SNOW_DISABLE_NAGLE
 #define SNOW_QUEUEING_ENABLED
@@ -34,6 +58,7 @@ inline int multi_loop_n_runtime = 8;
 enum method_enum {
     GET, POST, DELETE
 };
+const char method_strings[3][10] = {"GET", "POST", "DELETE"};
 
 enum error_enum {
     HOSTNAME_RESOLVE, WOLFSSL_NEW, CHUNKED_DATA_PARSING, WOLFSSL_CONNECT, HEADER_PARSING, SOCK_CREATION, SOCK_CONNECTION,
@@ -42,16 +67,42 @@ enum error_enum {
 
 struct snow_global_t;
 
+// initialises the lib
 void snow_init(snow_global_t *global);
 
+// destroys the lib
 void snow_destroy(snow_global_t *global);
 
+/*
+ * Tries to send request, may fail if there are no free connections (all concurrentConnections are being used)
+ *
+ * method            : GET / POST / DELETE
+ * ur
+ * write_cb          : called on successful completion
+ * err_cb            : called on error / timeout
+ * extra             : extra data for above functions
+ * extraHeaders
+ * extraHeaders_size
+ *
+ */
 void snow_do(snow_global_t *global, int method, const char *url, void (*write_cb)(char *data, size_t data_len, void *extra),
              void (*err_cb)(int err, void *extra),
              void *extra = nullptr, const char *extraHeaders = nullptr, size_t extraHeaders_size = 0);
 
 #ifdef SNOW_QUEUEING_ENABLED
 
+/*
+ * Tries to send request, if there is no free connection, puts it in the pending request queue
+ *
+ * method            : GET / POST / DELETE
+ * ur
+ * write_cb          : called on successful completion
+ * err_cb            : called on error / timeout
+ * extra             : extra data for above functions
+ * extraHeaders
+ * extraHeaders_size
+ *
+ */
 void snow_enqueue(snow_global_t *global, int method, const char *url, void (*write_cb)(char *data, size_t data_len, void *extra),
                   void (*err_cb)(int err, void *extra),
                   void *extra = nullptr, const char *extraHeaders = nullptr, size_t extraHeaders_size = 0);
@@ -60,14 +111,20 @@ void snow_enqueue(snow_global_t *global, int method, const char *url, void (*wri
 
 #ifdef SNOW_TLS_SESSION_REUSE
 
+/*
+ * Adds a hostname to the wanted TLS session list.
+ * These will be refreshed according to sessionRenewInterval
+ */
 void snow_addWantedSession(snow_global_t *global, const std::string &url);
 
 #endif
 
 #ifdef SNOW_MULTI_LOOP
 
+// creates threads
 void snow_spawnLoops(snow_global_t *global);
 
+// joins threads
 void snow_joinLoops(snow_global_t *global);
 
 #endif
@@ -78,8 +135,6 @@ constexpr int __TLS_DUMMY = -1;
 
 #define SNOW_LIKELY(x) __builtin_expect(!!(x), 1)
 #define SNOW_UNLIKELY(x) __builtin_expect(!!(x), 0)
-
-const char method_strings[3][10] = {"GET", "POST", "DELETE"};
 
 enum conn_status_enum {
     CONN_UNREADY, // before socket()

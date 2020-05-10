@@ -57,12 +57,10 @@ int main(int argc, char **argv) {
     snow_init(&global);
     snow_spawnLoops(&global);
 
-
     sleep(1);
 
     for (uint64_t id = 0; id < req_test_n; id++) {
-        char url[256] = "https://api.binance.com/api/v3/ping";
-        snow_enqueue(&global, GET, url, http_cb, err_cb, (void *) id);
+        snow_enqueue(&global, GET, "https://api.binance.com/api/v3/ping", http_cb, err_cb);
     }
     start = std::chrono::steady_clock::now();
 
