@@ -9,14 +9,13 @@ set(CMAKE_CXX_FLAGS "-lpthread")
 file(GLOB SOURCES
         include ./lib/*.h
         include ./lib/*.cpp
-        include ./lib/wolf/wolfssl-4.2.0/*
         )
 
-include_directories(snowhttp "lib/*" "./lib/wolf/wolfssl-4.2.0/")
+include_directories(snowhttp "lib/*" "./lib/wolf/wolfssl/")
 
 find_package (Threads)
 
 message("SOURCES = ${SOURCES}")
-add_executable(snowhttp main.cpp ${SOURCES} lib/atomic.h)
+add_executable(snowhttp example.cpp ${SOURCES} lib/atomic.h)
 
 target_link_libraries(snowhttp ${PROJECT_SOURCE_DIR}/lib/wolf/libwolfssl.a ${CMAKE_THREAD_LIBS_INIT})
