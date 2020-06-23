@@ -46,6 +46,8 @@ See `example.cpp`.
 ```c
     snow_global_t global = {}; // contains all data
     ev_loop loops[multi_loop_max]; // multi loop data
+    
+    assignLoops(&global);
 
     // optional, if TLS session reuse is wanted
     snow_addWantedSession(&global, "https://hostname.com"); 
