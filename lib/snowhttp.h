@@ -37,7 +37,7 @@ SOFTWARE.
 
 #include "events.h"
 
-constexpr int concurrentConnections = 256; // maximum concurrent connections
+constexpr int concurrentConnections = 15; // maximum concurrent connections
 constexpr int connUrlSize = 512; // maximum request url size
 constexpr int connBufferSize = 1 << 15U; // read & write buffer sizes
 constexpr int connSockPriority = 6; // socket priority
