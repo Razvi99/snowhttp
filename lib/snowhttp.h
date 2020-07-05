@@ -47,7 +47,7 @@ constexpr double mainTimerInterval = 0.001; // 1ms - queue checking - timeot che
 constexpr double sessionRenewInterval = 3600; // 1hr - cached session renewal timer
 
 constexpr int multi_loop_max = 16; // needed for static allocation, needs to be > multi_loop_n_runtime
-inline int multi_loop_n_runtime = 8; // actual thead number - must be < multi_loop_max
+inline int multi_loop_n_runtime = 1; // actual thead number - must be < multi_loop_max
 
 #define SNOW_DISABLE_NAGLE
 #define SNOW_QUEUEING_ENABLED
@@ -110,6 +110,8 @@ void snow_enqueue(snow_global_t *global, int method, const char *url, void (*wri
 #endif
 
 #ifdef SNOW_TLS_SESSION_REUSE
+
+void snow_renew_sessions(snow_global_t *global);
 
 /*
  * Adds a hostname to the wanted TLS session list.

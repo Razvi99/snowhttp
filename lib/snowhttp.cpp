@@ -554,6 +554,18 @@ void snow_timer_renew_cb(struct ev_loop *loop, struct ev_timer *w, int revents) 
     printf("INFO: renewing sessions\n");
 }
 
+void snow_renew_sessions(snow_global_t *global){
+    for (const std::string &url : global->wantedSessions) {
+        for (int i = 0; i < concurrentConnections; ++i) {
+            snow_enqueue(global, __TLS_DUMMY, url.c_str(), nullptr,
+                         [](int err, void *extra) { fprintf(stderr, "ERR: __TLS_DUMMY encountered error: %d\n", err); },
+                         nullptr, nullptr, 0);
+        }
+    }
+
+    printf("INFO: renewing sessions\n");
+}
+
 #endif
 
 ///// PUBLIC
