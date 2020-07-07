@@ -666,11 +666,15 @@ void snow_init(snow_global_t *global) {
         assert(0);
     }
 
+#ifdef SNOW_NO_CERT_VERIFY
+    wolfSSL_CTX_set_verify(global->wolfCtx, WOLFSSL_VERIFY_NONE, nullptr);
+#else
     // Load CA certificates into WOLFSSL_CTX
-    if (wolfSSL_CTX_load_verify_locations(global->wolfCtx, "/etc/ssl/certs/ca-certificates.crt", nullptr) != SSL_SUCCESS) {
-        fprintf(stderr, "ERR: Error loading /etc/ssl/certs/ca-certificates.crt");
+    if (wolfSSL_CTX_load_verify_locations(global->wolfCtx, sslCertPath, nullptr) != SSL_SUCCESS) {
+        fprintf(stderr, "ERR: Error loading %s", sslCertPath);
         assert(0);
     }
+#endif
 
     for (int i = 0; i < concurrentConnections; i++)
         global->freeConnections.push(i);  // atomic if multi loop
