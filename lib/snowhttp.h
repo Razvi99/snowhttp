@@ -49,11 +49,14 @@ constexpr double sessionRenewInterval = 3600; // 1hr - cached session renewal ti
 constexpr int multi_loop_max = 16; // needed for static allocation, needs to be > multi_loop_n_runtime
 inline int multi_loop_n_runtime = 8; // actual thead number - must be < multi_loop_max
 
+inline const char *sslCertPath = "/etc/ssl/certs/ca-certificates.crt";
+
 #define SNOW_DISABLE_NAGLE
 #define SNOW_QUEUEING_ENABLED
 #define SNOW_TLS_SESSION_REUSE
 #define SNOW_NO_POST_BODY
 #define SNOW_MULTI_LOOP
+#define SNOW_NO_CERT_VERIFY
 
 enum method_enum {
     GET, POST, DELETE
