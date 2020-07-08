@@ -32,6 +32,7 @@ SOFTWARE.
 #include <climits>
 #include <chrono>
 #include <netinet/tcp.h>
+#include "logger.h"
 
 void snow_processConnError(snow_connection_t *conn, int err) {
     if (conn->err_cb) conn->err_cb(err, conn->extra_cb);
@@ -551,7 +552,7 @@ void snow_timer_renew_cb(struct ev_loop *loop, struct ev_timer *w, int revents) 
         }
     }
 
-    printf("INFO: renewing sessions\n");
+    log_debug("internal snowhttp: renewing sessions");
 }
 
 void snow_renew_sessions(snow_global_t *global){
@@ -563,7 +564,7 @@ void snow_renew_sessions(snow_global_t *global){
         }
     }
 
-    printf("INFO: renewing sessions\n");
+    log_debug("internal snowhttp: renewing sessions");
 }
 
 #endif

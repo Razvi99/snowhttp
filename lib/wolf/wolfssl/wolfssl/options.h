@@ -21,6 +21,9 @@ extern "C" {
 #undef  LARGE_STATIC_BUFFERS
 #define LARGE_STATIC_BUFFERS
 
+#undef  WC_NO_HARDEN
+#define WC_NO_HARDEN
+
 #undef  OPENSSL_EXTRA
 #define OPENSSL_EXTRA
 

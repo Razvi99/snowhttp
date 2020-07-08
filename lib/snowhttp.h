@@ -53,7 +53,7 @@ inline int multi_loop_n_runtime = 1; // actual thead number - must be < multi_lo
 #define SNOW_QUEUEING_ENABLED
 #define SNOW_TLS_SESSION_REUSE
 #define SNOW_NO_POST_BODY
-#define SNOW_MULTI_LOOP
+//#define SNOW_MULTI_LOOP
 
 enum method_enum {
     GET, POST, DELETE
