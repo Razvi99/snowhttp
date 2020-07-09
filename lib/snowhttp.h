@@ -39,7 +39,7 @@ SOFTWARE.
 
 constexpr int concurrentConnections = 15; // maximum concurrent connections
 constexpr int connUrlSize = 512; // maximum request url size
-constexpr int connBufferSize = 1 << 15U; // read & write buffer sizes
+constexpr int connBufferSize = 1U << 20U; // read & write buffer sizes
 constexpr int connSockPriority = 6; // socket priority
 constexpr int connSockTimeout = 2000; // socket timeout in ms
 
