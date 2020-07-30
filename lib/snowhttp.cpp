@@ -32,7 +32,7 @@ SOFTWARE.
 #include <climits>
 #include <chrono>
 #include <netinet/tcp.h>
-#include "logger.h"
+#include "misc/logger.h"
 
 void snow_processConnError(snow_connection_t *conn, int err) {
     if (conn->err_cb) conn->err_cb(err, conn->extra_cb);
