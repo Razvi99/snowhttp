@@ -39,7 +39,8 @@ SOFTWARE.
 
 constexpr int concurrentConnections = 70; // maximum concurrent connections
 constexpr int connUrlSize = 512; // maximum request url size
-constexpr int connBufferSize = 1U << 20U; // read & write buffer sizes
+constexpr size_t readBuffSize = 1U << 22U; // read buffer size
+constexpr size_t writeBuffSize = 1U << 18U; // write buffer size
 constexpr int connSockPriority = 6; // socket priority
 constexpr int connSockTimeout = 10000; // socket timeout in ms
 
@@ -149,10 +150,14 @@ enum conn_status_enum {
     CONN_DONE // received http response
 };
 
+template<size_t size>
 struct buff_static_t {
-    char buff[connBufferSize] = {};
     size_t tail = 0;
     size_t head = 0;
+    char buff[size] = {};
+
+    inline size_t to_pull() { return head - tail; }
+    inline bool empty() { return head == tail; }
 };
 
 struct ev_io_snow {
@@ -194,8 +199,8 @@ struct snow_connection_t {
 
     struct ev_io_snow ior = {}, iow = {};
 
-    buff_static_t writeBuff;
-    buff_static_t readBuff;
+    buff_static_t<writeBuffSize> writeBuff;
+    buff_static_t<readBuffSize> readBuff;
 
     int expectedContentLen = 0;
     char *content = nullptr;

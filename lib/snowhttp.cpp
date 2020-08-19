@@ -53,18 +53,10 @@ void snow_processConnError(snow_connection_t *conn, int err) {
     conn->global->freeConnections.push(conn->id);  // atomic if multi loop
 }
 
-size_t snow_buff_to_pull(struct buff_static_t *buff) {
-    return buff->head - buff->tail;
-}
-
-bool snow_buff_empty(struct buff_static_t *buff) {
-    return buff->head == buff->tail;
-}
-
-size_t snow_buff_pull_to_sock(struct buff_static_t *buff, snow_connection_t *conn, size_t size) {
+size_t snow_buff_pull_to_sock(struct buff_static_t<writeBuffSize> *buff, snow_connection_t *conn, size_t size) {
     size_t remain = size;
 
-    if (buff->tail + size > connBufferSize) {
+    if (buff->tail + size > writeBuffSize) {
         snow_processConnError(conn, BUFF_WRITE_SMALL);
         return -1;
     }
@@ -103,7 +95,7 @@ size_t snow_buff_pull_to_sock(struct buff_static_t *buff, snow_connection_t *con
     return remain;
 }
 
-size_t snow_buff_put_from_sock(struct buff_static_t *buff, snow_connection_t *conn, int size) {
+size_t snow_buff_put_from_sock(struct buff_static_t<readBuffSize> *buff, snow_connection_t *conn, int size) {
     size_t remain, total = 0;
 
     if (size < 0) size = INT_MAX;
@@ -111,7 +103,7 @@ size_t snow_buff_put_from_sock(struct buff_static_t *buff, snow_connection_t *co
 
     while (remain) {
         ssize_t ret;
-        size_t head_room = connBufferSize - buff->head;
+        size_t head_room = readBuffSize - buff->head;
 
         if (head_room <= 0) {
             snow_processConnError(conn, BUFF_READ_SMALL);
@@ -420,7 +412,7 @@ static void snow_io_read_cb(struct ev_loop *loop, struct ev_io *w, int revents) 
 }
 
 int snow_sendRequest(snow_connection_t *conn) {
-    int rem = snow_buff_pull_to_sock(&conn->writeBuff, conn, snow_buff_to_pull(&conn->writeBuff));
+    int rem = snow_buff_pull_to_sock(&conn->writeBuff, conn, conn->writeBuff.to_pull());
 
     if (rem == 0) conn->connectionStatus = CONN_WAITING;
 
@@ -448,7 +440,7 @@ static void snow_io_write_cb(struct ev_loop *loop, struct ev_io *w, int revents)
         snow_continueTLSHandshake(conn);
     }
 
-    if (conn->connectionStatus == CONN_READY && !snow_buff_empty(&conn->writeBuff)) {
+    if (conn->connectionStatus == CONN_READY && !conn->writeBuff.empty()) {
         if (snow_sendRequest(conn) == 0)
             ev_io_stop(loop, (struct ev_io *) &conn->iow);
     }
