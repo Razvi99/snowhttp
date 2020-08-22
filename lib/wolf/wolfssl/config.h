@@ -126,7 +126,7 @@
 #define PACKAGE_NAME "wolfssl"
 
 /* Define to the full name and version of this package. */
-#define PACKAGE_STRING "wolfssl 4.4.0"
+#define PACKAGE_STRING "wolfssl 4.5.0"
 
 /* Define to the one symbol short name of this package. */
 #define PACKAGE_TARNAME "wolfssl"
@@ -135,7 +135,7 @@
 #define PACKAGE_URL "https://www.wolfssl.com"
 
 /* Define to the version of this package. */
-#define PACKAGE_VERSION "4.4.0"
+#define PACKAGE_VERSION "4.5.0"
 
 /* Define to necessary symbol if this constant uses a non-standard name on
    your system. */
@@ -188,4 +188,3 @@
 /* Define to the type of an unsigned integer type of width exactly 8 bits if
    such a type exists and the standard includes do not define it. */
 /* #undef uint8_t */
-

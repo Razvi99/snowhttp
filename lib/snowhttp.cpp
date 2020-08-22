@@ -72,12 +72,12 @@ size_t snow_buff_pull_to_sock(struct buff_static_t<writeBuffSize> *buff, snow_co
                     break;
                 else {
                     snow_processConnError(conn, SOCK_WRITE_ERR);
-                    return -1;
 #ifdef SNOW_DEBUG
                     char buffer[256];
                     fprintf(stderr, "sock pull error = %d, %s\n", err, wolfSSL_ERR_error_string(err, buffer));
                     assert(0);
 #endif
+                    return -1;
                 }
             }
         } else {
@@ -118,12 +118,12 @@ size_t snow_buff_put_from_sock(struct buff_static_t<readBuffSize> *buff, snow_co
                     break;
                 else {
                     snow_processConnError(conn, SOCK_READ_ERR);
-                    return 0;
 #ifdef SNOW_DEBUG
                     char buffer[256];
                     fprintf(stderr, "sock put error = %d, %s\n", err, wolfSSL_ERR_error_string(err, buffer));
                     assert(0);
 #endif
+                    return 0;
                 }
             }
         } else {
@@ -138,12 +138,13 @@ size_t snow_buff_put_from_sock(struct buff_static_t<readBuffSize> *buff, snow_co
 
         if (SNOW_UNLIKELY(ret == 0)) {
             snow_processConnError(conn, SOCK_READ_CLOSED);
-            return 0;
+            int err = wolfSSL_get_error(conn->ssl, ret);
 #ifdef SNOW_DEBUG
             char buffer[256];
-                    fprintf(stderr, "sock put error = %d, %s\n", err, wolfSSL_ERR_error_string(err, buffer));
-                    assert(0);
+            fprintf(stderr, "sock put error = %d, %s\n", err, wolfSSL_ERR_error_string(err, buffer));
+            assert(0);
 #endif
+            return 0;
         }
 
         if (SNOW_UNLIKELY(ret <= 0)) {
@@ -302,7 +303,6 @@ void snow_parseChunks(snow_connection_t *conn) {
     *newCopyStart = 0; // terminate string
     conn->readBuff.head = newCopyStart - conn->readBuff.buff + 1; // reclaim some buff space
 
-
     if (conn->contentLen != (size_t) (newCopyStart - conn->content)) { // got all data
         snow_processConnError(conn, CHUNKED_DATA_PARSING);
         return;
@@ -317,12 +317,12 @@ void snow_continueTLSHandshake(snow_connection_t *conn) {
         int err = wolfSSL_get_error(conn->ssl, ret);
         if (err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
             snow_processConnError(conn, WOLFSSL_CONNECT);
-            return;
 #ifdef SNOW_DEBUG
-            char buffer[80];
+            char buffer[256];
             fprintf(stderr, "error = %d, %s\n", err, wolfSSL_ERR_error_string(err, buffer));
             assert(0);
 #endif
+            return;
         }
 
     } else {
@@ -522,7 +522,6 @@ void snow_timer_cb(struct ev_loop *loop, struct ev_timer *w, int revents) {
         }
     }
 
-
     while (!global->requestQueue.empty() && !global->freeConnections.empty()) { // check for free connections
         snow_bareRequest_t req = global->requestQueue.front();
         global->requestQueue.pop();
@@ -535,19 +534,10 @@ void snow_timer_cb(struct ev_loop *loop, struct ev_timer *w, int revents) {
 
 void snow_timer_renew_cb(struct ev_loop *loop, struct ev_timer *w, int revents) {
     auto *global = (struct snow_global_t *) ((struct ev_timer_snow *) w)->data;
-
-    for (const std::string &url : global->wantedSessions) {
-        for (int i = 0; i < concurrentConnections; ++i) {
-            snow_enqueue(global, __TLS_DUMMY, url.c_str(), nullptr,
-                         [](int err, void *extra) { fprintf(stderr, "ERR: __TLS_DUMMY encountered error: %d\n", err); },
-                         nullptr, nullptr, 0);
-        }
-    }
-
-    log_debug("internal snowhttp: renewing sessions");
+    snow_renew_sessions(global);
 }
 
-void snow_renew_sessions(snow_global_t *global){
+void snow_renew_sessions(snow_global_t *global) {
     for (const std::string &url : global->wantedSessions) {
         for (int i = 0; i < concurrentConnections; ++i) {
             snow_enqueue(global, __TLS_DUMMY, url.c_str(), nullptr,
@@ -648,6 +638,7 @@ void snow_joinLoops(snow_global_t *global) {
 
 void snow_init(snow_global_t *global) {
     wolfSSL_Init();
+    wolfSSL_Debugging_ON();
 
     global->wolfCtx = wolfSSL_CTX_new(wolfTLSv1_2_client_method());
 

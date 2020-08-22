@@ -40,12 +40,12 @@ SOFTWARE.
 constexpr int concurrentConnections = 70; // maximum concurrent connections
 constexpr int connUrlSize = 512; // maximum request url size
 constexpr size_t readBuffSize = 1U << 22U; // read buffer size
-constexpr size_t writeBuffSize = 1U << 18U; // write buffer size
+constexpr size_t writeBuffSize = 1U << 14U; // write buffer size
 constexpr int connSockPriority = 6; // socket priority
 constexpr int connSockTimeout = 10000; // socket timeout in ms
 
 constexpr double mainTimerInterval = 0.001; // 1ms - queue checking - timeot checking
-constexpr double sessionRenewInterval = 3600; // 1hr - cached session renewal timer
+constexpr double sessionRenewInterval = 43200; // 12hr - cached session renewal timer
 
 constexpr int multi_loop_max = 16; // needed for static allocation, needs to be > multi_loop_n_runtime
 inline int multi_loop_n_runtime = 1; // actual thead number - must be < multi_loop_max
