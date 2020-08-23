@@ -638,7 +638,7 @@ void snow_joinLoops(snow_global_t *global) {
 
 void snow_init(snow_global_t *global) {
     wolfSSL_Init();
-    wolfSSL_Debugging_ON();
+    //wolfSSL_Debugging_ON(); // has no effect if wolfssl is not compiled with debug option
 
     global->wolfCtx = wolfSSL_CTX_new(wolfTLSv1_2_client_method());
 
