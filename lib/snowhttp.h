@@ -166,6 +166,28 @@ struct ev_timer_snow {
     void *data;
 };
 
+template<typename T>
+struct host_port_t {
+    T host;
+    int port;
+};
+
+struct host_port_t_functor {
+    using is_transparent = void;
+    bool operator()(host_port_t<std::string> const &lhs, host_port_t<std::string> const &rhs) const {
+        int r = lhs.host.compare(rhs.host);
+        return r == 0 ? lhs.port < rhs.port : r;
+    }
+    bool operator()(host_port_t<char *> const &lhs, host_port_t<std::string> const &rhs) const {
+        int r = rhs.host.compare(lhs.host);
+        return r == 0 ? lhs.port < rhs.port : -r;
+    }
+    bool operator()(host_port_t<std::string> const &lhs, host_port_t<char *> const &rhs) const {
+        int r = lhs.host.compare(rhs.host);
+        return r == 0 ? lhs.port < rhs.port : r;
+    }
+};
+
 constexpr struct linger sock_linger0 = {1, 0};
 
 struct snow_connection_t {
@@ -206,13 +228,12 @@ struct snow_connection_t {
     void *extra_cb = nullptr;
 
     void (*write_cb)(char *data, size_t data_len, void *extra) = nullptr;
-
     void (*err_cb)(int err, void *extra) = nullptr;
 
     snow_global_t *global = nullptr;
 
 #ifdef SNOW_TLS_SESSION_REUSE
-    std::map<std::string, WOLFSSL_SESSION *> sessions;
+    std::map<host_port_t<std::string>, WOLFSSL_SESSION *, host_port_t_functor> sessions;
 #endif
 };
 
@@ -223,7 +244,6 @@ struct snow_bareRequest_t {
     void *extra_cb;
 
     void (*write_cb)(char *data, size_t data_len, void *extra);
-
     void (*err_cb)(int err, void *extra);
 
     const char *extraHeaders;
@@ -233,7 +253,7 @@ struct snow_bareRequest_t {
 struct snow_global_t {
 #ifndef SNOW_MULTI_LOOP
     ev_loop *loop = nullptr;
-    std::map<std::string, struct addrinfo *> addrCache;
+    std::map<host_port_t<std::string>, struct addrinfo *, host_port_t_functor> addrCache;
     std::queue<int, std::deque<int>> freeConnections;
 #else
     int rr_loop = 0;
@@ -241,7 +261,7 @@ struct snow_global_t {
     ev_loop *loops[multi_loop_max];
     ev_loop *loop = nullptr;
 
-    atomic::map<std::string, struct addrinfo *> addrCache;
+    atomic::map<host_port_t<std::string>, struct addrinfo *, host_port_t_functor> addrCache;
     atomic::queue<int, std::deque<int>> freeConnections;
 #endif
 
