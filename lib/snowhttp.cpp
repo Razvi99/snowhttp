@@ -209,10 +209,7 @@ void snow_parseUrl(snow_connection_t *conn) {
 }
 
 void snow_resolveHost(snow_connection_t *conn) {
-    std::string hostPort = conn->hostname;
-    hostPort.append(conn->portPtr);
-
-    auto it = conn->global->addrCache.find(hostPort); // atomic if multi loop
+    auto it = conn->global->addrCache.find(host_port_t<char *>{conn->hostname, conn->port}); // atomic if multi loop
 
     if (it != conn->global->addrCache.end()) {
         conn->addrinfo = it->second;
@@ -228,7 +225,7 @@ void snow_resolveHost(snow_connection_t *conn) {
             return;
         }
 
-        conn->global->addrCache.insert({hostPort, conn->addrinfo});  // atomic if multi loop
+        conn->global->addrCache.insert({{std::string(conn->hostname), conn->port}, conn->addrinfo});  // atomic if multi loop
     }
 }
 
@@ -240,10 +237,7 @@ void snow_startTLSHandshake(snow_connection_t *conn) {
 
 #ifdef SNOW_TLS_SESSION_REUSE
     if (conn->method != __TLS_DUMMY) {
-        std::string hostPort = conn->hostname;
-        hostPort.append(conn->portPtr);
-
-        auto session = conn->sessions.find(hostPort);
+        auto session = conn->sessions.find(host_port_t<char *>{conn->hostname, conn->port});
 
         if (session != conn->sessions.end()) {
             if (wolfSSL_set_session(conn->ssl, session->second) != SSL_SUCCESS) {
@@ -330,17 +324,15 @@ void snow_continueTLSHandshake(snow_connection_t *conn) {
 
 #ifdef SNOW_TLS_SESSION_REUSE
         if (conn->method == __TLS_DUMMY) {
-            std::string hostPort = conn->hostname;
-            hostPort.append(conn->portPtr);
-
-            auto session = conn->sessions.find(hostPort);
+            auto session = conn->sessions.find(host_port_t<char *>{conn->hostname, conn->port});
 
             if (session != conn->sessions.end()) { // remove and free old session
                 wolfSSL_SESSION_free(session->second);
-                conn->sessions.erase(hostPort);
+                conn->sessions.erase(session);
             }
 
-            conn->sessions.insert({hostPort, wolfSSL_get_session(conn->ssl)}); // insert new session
+            conn->sessions.insert({host_port_t<std::string>{conn->hostname, conn->port},
+                                   wolfSSL_get_session(conn->ssl)}); // insert new session
 
             ev_io_stop(conn->loop, (struct ev_io *) &conn->ior);
             ev_io_stop(conn->loop, (struct ev_io *) &conn->iow);
@@ -568,7 +560,7 @@ void snow_do(snow_global_t *global, int method, const char *url, void (*write_cb
     snow_connection_t *conn = &global->connections[id];
 
 #ifdef SNOW_TLS_SESSION_REUSE
-    memset(conn, 0, sizeof(struct snow_connection_t) - (sizeof(std::map<std::string, WOLFSSL_SESSION *>)));
+    memset(conn, 0, sizeof(struct snow_connection_t) - (sizeof(std::map<host_port_t<std::string>, WOLFSSL_SESSION *, host_port_t_functor>)));
 #else
     memset(conn, 0, sizeof(struct snow_connection_t));
 #endif
