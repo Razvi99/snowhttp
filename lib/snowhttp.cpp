@@ -79,12 +79,12 @@ size_t snow_buff_pull_to_sock(struct buff_static_t *buff, snow_connection_t *con
                     break;
                 else {
                     snow_processConnError(conn, SOCK_WRITE_ERR);
-                    return -1;
 #ifdef SNOW_DEBUG
                     char buffer[256];
                     fprintf(stderr, "sock pull error = %d, %s\n", err, wolfSSL_ERR_error_string(err, buffer));
                     assert(0);
 #endif
+                    return -1;
                 }
             }
         } else {
@@ -125,12 +125,12 @@ size_t snow_buff_put_from_sock(struct buff_static_t *buff, snow_connection_t *co
                     break;
                 else {
                     snow_processConnError(conn, SOCK_READ_ERR);
-                    return 0;
 #ifdef SNOW_DEBUG
                     char buffer[256];
                     fprintf(stderr, "sock put error = %d, %s\n", err, wolfSSL_ERR_error_string(err, buffer));
                     assert(0);
 #endif
+                    return 0;
                 }
             }
         } else {
@@ -145,12 +145,12 @@ size_t snow_buff_put_from_sock(struct buff_static_t *buff, snow_connection_t *co
 
         if (SNOW_UNLIKELY(ret == 0)) {
             snow_processConnError(conn, SOCK_READ_CLOSED);
-            return 0;
 #ifdef SNOW_DEBUG
             char buffer[256];
-                    fprintf(stderr, "sock put error = %d, %s\n", err, wolfSSL_ERR_error_string(err, buffer));
-                    assert(0);
+            fprintf(stderr, "sock put error = %d, %s\n", ret, wolfSSL_ERR_error_string(ret, buffer));
+            assert(0);
 #endif
+            return 0;
         }
 
         if (SNOW_UNLIKELY(ret <= 0)) {
@@ -241,6 +241,14 @@ void snow_startTLSHandshake(snow_connection_t *conn) {
         return;
     }
 
+    // set SNI
+    int ret = wolfSSL_UseSNI(conn->ssl, WOLFSSL_SNI_HOST_NAME, conn->hostname, conn->path - conn->hostname - 1);
+    if (SNOW_UNLIKELY(ret != WOLFSSL_SUCCESS)) {
+        char error_buff[100];
+        fprintf(stderr, "Setting host name failed with error condition: %d and reason %s\n", ret, wolfSSL_ERR_error_string(ret, error_buff));
+        assert(0);
+    }
+
 #ifdef SNOW_TLS_SESSION_REUSE
     if (conn->method != __TLS_DUMMY) {
         auto session = conn->sessions.find(host_port_t<char *>{conn->hostname, conn->port});
@@ -318,12 +326,12 @@ void snow_continueTLSHandshake(snow_connection_t *conn) {
         int err = wolfSSL_get_error(conn->ssl, ret);
         if (err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
             snow_processConnError(conn, WOLFSSL_CONNECT);
-            return;
 #ifdef SNOW_DEBUG
             char buffer[80];
             fprintf(stderr, "error = %d, %s\n", err, wolfSSL_ERR_error_string(err, buffer));
             assert(0);
 #endif
+            return;
         }
 
     } else {
@@ -643,6 +651,7 @@ void snow_init(snow_global_t *global) {
         assert(0);
     }
 
+#ifdef SNOW_TLS_SESSION_REUSE
     if (wolfSSL_CTX_UseSessionTicket(global->wolfCtx) != SSL_SUCCESS) {
         fprintf(stderr, "ERR: ticket enable error.\n");
         assert(0);
@@ -652,6 +661,7 @@ void snow_init(snow_global_t *global) {
         fprintf(stderr, "ERR: could not turn session cache flushing off.\n");
         assert(0);
     }
+#endif
 
 #ifdef SNOW_NO_CERT_VERIFY
     wolfSSL_CTX_set_verify(global->wolfCtx, WOLFSSL_VERIFY_NONE, nullptr);
